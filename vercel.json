@@ -4,5 +4,9 @@
       "path": "/api/cron/rekap-provinsi",
       "schedule": "0 1 * * *"
     }
+  ],
+  "rewrites": [
+    { "source": "/api/cron/rekap-provinsi", "destination": "/api/cron/rekap-provinsi" },
+    { "source": "/api/:path*", "destination": "/api/handler" }
   ]
 }
