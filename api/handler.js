@@ -553,7 +553,260 @@ async function handlePemilihApi(request, url, db, user) {
     return json(data);
   }
 
-  // TODO kelompok berikutnya: TMS list/rekap, deteksi ganda, infografis.
+  // ---- TAB DATA TMS: list & rekap ----
+  if (path === "/api/pemilih/tms/list" && method === "GET") {
+    const kecamatan = url.searchParams.get("kecamatan");
+    const kelurahan = url.searchParams.get("kelurahan");
+    const tps = url.searchParams.get("tps");
+    const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+    const offset = (page - 1) * PAGE_SIZE;
+
+    let where = "WHERE kode_tms IS NOT NULL";
+    const params = [];
+    if (kecamatan) { where += " AND kecamatan = ?"; params.push(kecamatan); }
+    if (kelurahan) { where += " AND kelurahan = ?"; params.push(kelurahan); }
+    if (tps) { where += " AND tps = ?"; params.push(tps); }
+
+    const results = await dbAll(
+      db,
+      `SELECT id, kecamatan, kelurahan, nkk, nik, nama, tempat_lahir, tanggal_lahir,
+              sts_kawin, kelamin, alamat, rt, rw, disabilitas, ektp, keterangan,
+              sumber, tps, kode_tms, tanggal_tms
+       FROM pemilih ${where} ORDER BY tanggal_tms DESC LIMIT ? OFFSET ?`,
+      [...params, PAGE_SIZE, offset]
+    );
+    const countRow = await dbFirst(db, `SELECT COUNT(*) as total FROM pemilih ${where}`, params);
+    const withLabel = results.map((r) => ({ ...r, kode_tms_label: TMS_LABELS[r.kode_tms] || r.kode_tms }));
+
+    return json({ data: withLabel, total: countRow.total, page, pageSize: PAGE_SIZE });
+  }
+
+  if (path === "/api/pemilih/tms/rekap" && method === "GET") {
+    const results = await dbAll(
+      db,
+      `SELECT kecamatan, kode_tms, COUNT(*) as jumlah FROM pemilih WHERE kode_tms IS NOT NULL
+       GROUP BY kecamatan, kode_tms ORDER BY kecamatan, kode_tms`
+    );
+    const rekapMap = {};
+    for (const row of results) {
+      if (!rekapMap[row.kecamatan]) rekapMap[row.kecamatan] = { kecamatan: row.kecamatan, total: 0, breakdown: {} };
+      rekapMap[row.kecamatan].total += row.jumlah;
+      rekapMap[row.kecamatan].breakdown[row.kode_tms] = { label: TMS_LABELS[row.kode_tms] || row.kode_tms, jumlah: row.jumlah };
+    }
+    return json({ rekap: Object.values(rekapMap) });
+  }
+
+  // ---- Deteksi NIK ganda (muncul lebih dari sekali di antara pemilih yang masih MS) ----
+  if (path === "/api/pemilih/deteksi-ganda" && method === "GET") {
+    const data = await withCache(["deteksi-ganda", user.kabkotaKode], 600, async () => {
+      const dupNiks = await dbAll(
+        db,
+        `SELECT nik, COUNT(*) as jumlah FROM pemilih
+         WHERE kode_tms IS NULL AND nik IS NOT NULL AND nik != ''
+         GROUP BY nik HAVING COUNT(*) > 1
+         ORDER BY jumlah DESC LIMIT 150`
+      );
+      if (dupNiks.length === 0) return { groups: [] };
+
+      const nikList = dupNiks.map((r) => r.nik);
+      const BATCH_SIZE = 50; // batasi jumlah parameter per query, sama seperti sebelumnya
+      let records = [];
+      for (let i = 0; i < nikList.length; i += BATCH_SIZE) {
+        const batch = nikList.slice(i, i + BATCH_SIZE);
+        const placeholders = batch.map(() => "?").join(",");
+        const rows = await dbAll(
+          db,
+          `SELECT id, nik, kecamatan, kelurahan, nama, tempat_lahir, tanggal_lahir, alamat, tps
+           FROM pemilih WHERE nik IN (${placeholders}) AND kode_tms IS NULL ORDER BY nik`,
+          batch
+        );
+        records.push(...rows);
+      }
+
+      const groupMap = {};
+      for (const rec of records) {
+        if (!groupMap[rec.nik]) groupMap[rec.nik] = [];
+        groupMap[rec.nik].push(rec);
+      }
+      return { groups: Object.entries(groupMap).map(([nik, records]) => ({ nik, records })) };
+    });
+    return json(data);
+  }
+
+  // ---- Cari 1 NIK spesifik di seluruh kabkota (index-based, ringan) ----
+  if (path === "/api/pemilih/cari-nik-ganda" && method === "GET") {
+    const nik = (url.searchParams.get("nik") || "").trim();
+    if (!nik) return json({ error: "Parameter nik wajib diisi" }, 400);
+
+    const results = await dbAll(
+      db,
+      `SELECT id, nik, kecamatan, kelurahan, nama, tempat_lahir, tanggal_lahir, alamat, tps, kode_tms
+       FROM pemilih WHERE nik = ? ORDER BY kecamatan`,
+      [nik]
+    );
+    return json({ records: results });
+  }
+
+  // ---- Infografis per kecamatan: bundel data detail untuk drill-down dari peta ----
+  if (path === "/api/pemilih/infografis/kecamatan" && method === "GET") {
+    const kecamatan = url.searchParams.get("kecamatan");
+    if (!kecamatan) return json({ error: "Parameter kecamatan wajib diisi" }, 400);
+
+    const data = await withCache(["infografis-kecamatan", user.kabkotaKode, kecamatan], 300, async () => {
+      const currentYear = new Date().getFullYear();
+
+      const desaRows = await dbAll(db, `SELECT kelurahan, kelamin, COUNT(*) as jumlah FROM pemilih WHERE kecamatan = ? AND kode_tms IS NULL GROUP BY kelurahan, kelamin`, [kecamatan]);
+      const perDesaMap = {};
+      for (const r of desaRows) {
+        if (!perDesaMap[r.kelurahan]) perDesaMap[r.kelurahan] = { kelurahan: r.kelurahan, laki: 0, perempuan: 0, jumlah: 0 };
+        if (r.kelamin === "L") perDesaMap[r.kelurahan].laki += r.jumlah;
+        else if (r.kelamin === "P") perDesaMap[r.kelurahan].perempuan += r.jumlah;
+        perDesaMap[r.kelurahan].jumlah += r.jumlah;
+      }
+      const perDesa = Object.values(perDesaMap);
+      const totalLaki = perDesa.reduce((s, d) => s + d.laki, 0);
+      const totalPerempuan = perDesa.reduce((s, d) => s + d.perempuan, 0);
+
+      const disRows = await dbAll(
+        db,
+        `SELECT kelurahan, disabilitas, kelamin, COUNT(*) as jumlah FROM pemilih
+         WHERE kecamatan = ? AND kode_tms IS NULL AND disabilitas IS NOT NULL AND disabilitas != '' AND disabilitas != '0'
+         GROUP BY kelurahan, disabilitas, kelamin`,
+        [kecamatan]
+      );
+      const disPerDesaMap = {};
+      let totalDisabilitas = 0;
+      for (const r of disRows) {
+        if (!disPerDesaMap[r.kelurahan]) disPerDesaMap[r.kelurahan] = { kelurahan: r.kelurahan, total: 0, breakdown: {} };
+        const d = disPerDesaMap[r.kelurahan];
+        d.total += r.jumlah;
+        totalDisabilitas += r.jumlah;
+        if (!d.breakdown[r.disabilitas]) d.breakdown[r.disabilitas] = { label: DISABILITAS_LABELS[r.disabilitas] || r.disabilitas, laki: 0, perempuan: 0 };
+        if (r.kelamin === "L") d.breakdown[r.disabilitas].laki += r.jumlah;
+        else if (r.kelamin === "P") d.breakdown[r.disabilitas].perempuan += r.jumlah;
+      }
+      const disabilitasPerDesa = Object.values(disPerDesaMap);
+
+      const tmsRows = await dbAll(db, `SELECT kode_tms, COUNT(*) as jumlah FROM pemilih WHERE kecamatan = ? AND kode_tms IS NOT NULL GROUP BY kode_tms`, [kecamatan]);
+      const tmsBreakdown = tmsRows.map((r) => ({ kode: r.kode_tms, label: TMS_LABELS[r.kode_tms] || r.kode_tms, jumlah: r.jumlah }));
+      const totalTms = tmsBreakdown.reduce((s, r) => s + r.jumlah, 0);
+
+      const baruRows = await dbAll(db, `SELECT kelurahan, COUNT(*) as jumlah FROM pemilih WHERE kecamatan = ? AND tanggal_input IS NOT NULL GROUP BY kelurahan`, [kecamatan]);
+      const pemilihBaruPerDesa = baruRows.map((r) => ({ kelurahan: r.kelurahan, jumlah: r.jumlah }));
+      const totalPemilihBaru = pemilihBaruPerDesa.reduce((s, r) => s + r.jumlah, 0);
+
+      const genRows = await dbAll(
+        db,
+        `SELECT
+           CASE
+             WHEN CAST(substr(tanggal_lahir,7,4) AS INTEGER) BETWEEN 1997 AND 2009 THEN 'Gen Z'
+             WHEN CAST(substr(tanggal_lahir,7,4) AS INTEGER) BETWEEN 1981 AND 1996 THEN 'Milenial'
+             WHEN CAST(substr(tanggal_lahir,7,4) AS INTEGER) BETWEEN 1965 AND 1980 THEN 'Gen X'
+             WHEN CAST(substr(tanggal_lahir,7,4) AS INTEGER) BETWEEN 1946 AND 1964 THEN 'Baby Boomer'
+             ELSE 'Lainnya'
+           END as generasi,
+           COUNT(*) as jumlah
+         FROM pemilih WHERE kecamatan = ? AND kode_tms IS NULL AND tanggal_lahir LIKE '__/__/____'
+         GROUP BY generasi`,
+        [kecamatan]
+      );
+      const generasi = genRows.map((r) => ({ label: r.generasi, jumlah: r.jumlah }));
+
+      const tmsAktivitas = await dbAll(db, `SELECT kelurahan, COUNT(*) as jumlah FROM pemilih WHERE kecamatan = ? AND tanggal_tms IS NOT NULL AND tanggal_tms >= datetime('now','-30 days') GROUP BY kelurahan`, [kecamatan]);
+      const baruAktivitas = await dbAll(db, `SELECT kelurahan, COUNT(*) as jumlah FROM pemilih WHERE kecamatan = ? AND tanggal_input IS NOT NULL AND tanggal_input >= datetime('now','-30 days') GROUP BY kelurahan`, [kecamatan]);
+      const ujiPetikMap = {};
+      for (const r of tmsAktivitas) ujiPetikMap[r.kelurahan] = (ujiPetikMap[r.kelurahan] || 0) + r.jumlah;
+      for (const r of baruAktivitas) ujiPetikMap[r.kelurahan] = (ujiPetikMap[r.kelurahan] || 0) + r.jumlah;
+      const ujiPetikDesa = Object.entries(ujiPetikMap).map(([kelurahan, jumlah]) => ({ kelurahan, jumlah })).sort((a, b) => b.jumlah - a.jumlah);
+
+      const ektpRows = await dbAll(db, `SELECT kelurahan, ektp, kelamin, COUNT(*) as jumlah FROM pemilih WHERE kecamatan = ? AND kode_tms IS NULL GROUP BY kelurahan, ektp, kelamin`, [kecamatan]);
+      const ektpPerDesaMap = {};
+      for (const r of ektpRows) {
+        if (!ektpPerDesaMap[r.kelurahan]) ektpPerDesaMap[r.kelurahan] = { kelurahan: r.kelurahan, sudah: { laki: 0, perempuan: 0 }, belum: { laki: 0, perempuan: 0 } };
+        const bucket = (r.ektp || "").toLowerCase() === "s" ? "sudah" : "belum";
+        if (r.kelamin === "L") ektpPerDesaMap[r.kelurahan][bucket].laki += r.jumlah;
+        else if (r.kelamin === "P") ektpPerDesaMap[r.kelurahan][bucket].perempuan += r.jumlah;
+      }
+      const ektpPerDesa = Object.values(ektpPerDesaMap);
+
+      const umur100Rows = await dbAll(
+        db,
+        `SELECT kelurahan, COUNT(*) as jumlah FROM pemilih
+         WHERE kecamatan = ? AND kode_tms IS NULL AND tanggal_lahir LIKE '__/__/____'
+           AND (? - CAST(substr(tanggal_lahir,7,4) AS INTEGER)) >= 100
+         GROUP BY kelurahan`,
+        [kecamatan, currentYear]
+      );
+      const pemilih100PerDesa = umur100Rows.map((r) => ({ kelurahan: r.kelurahan, jumlah: r.jumlah }));
+
+      // Ubah Data per desa -- JOIN ke pemilih via pemilih_id karena ubah_data_log di skema baru
+      // tidak menyimpan kecamatan/kelurahan sendiri (beda dari skema Malang lama).
+      const ubahRows = await dbAll(
+        db,
+        `SELECT p.kelurahan as kelurahan, COUNT(DISTINCT ud.pemilih_id) as jumlah
+         FROM ubah_data_log ud JOIN pemilih p ON p.id = ud.pemilih_id
+         WHERE p.kecamatan = ? GROUP BY p.kelurahan`,
+        [kecamatan]
+      );
+      const ubahDataPerDesa = ubahRows.map((r) => ({ kelurahan: r.kelurahan, jumlah: r.jumlah }));
+      const totalUbahData = ubahDataPerDesa.reduce((s, r) => s + r.jumlah, 0);
+
+      return {
+        kecamatan, totalPemilih: totalLaki + totalPerempuan, totalLaki, totalPerempuan, perDesa,
+        totalDisabilitas, disabilitasPerDesa, tmsBreakdown, totalTms, totalPemilihBaru, pemilihBaruPerDesa,
+        generasi, ujiPetikDesa, ektpPerDesa, pemilih100PerDesa, totalUbahData, ubahDataPerDesa,
+      };
+    });
+    return json(data);
+  }
+
+  // ---- Rekap "Ubah Data" per desa (koreksi nama/alamat/dll) ----
+  if (path === "/api/pemilih/ubah-data/rekap" && method === "GET") {
+    const kecamatan = url.searchParams.get("kecamatan");
+    const data = await withCache(["ubahdata-rekap", user.kabkotaKode, kecamatan || "_all"], 180, async () => {
+      let where = "WHERE 1=1";
+      const params = [];
+      if (kecamatan) { where += " AND p.kecamatan = ?"; params.push(kecamatan); }
+
+      const results = await dbAll(
+        db,
+        `SELECT p.kelurahan as kelurahan, COUNT(DISTINCT ud.pemilih_id) as jumlah
+         FROM ubah_data_log ud JOIN pemilih p ON p.id = ud.pemilih_id ${where} GROUP BY p.kelurahan`,
+        params
+      );
+      const perDesa = results.map((r) => ({ kelurahan: r.kelurahan, jumlah: r.jumlah }));
+      const total = perDesa.reduce((s, r) => s + r.jumlah, 0);
+      return { perDesa, total };
+    });
+    return json(data);
+  }
+
+  // ---- Daftar riwayat "Ubah Data" ----
+  if (path === "/api/pemilih/ubah-data/list" && method === "GET") {
+    const kecamatan = url.searchParams.get("kecamatan");
+    const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+    const offset = (page - 1) * PAGE_SIZE;
+
+    let where = "WHERE 1=1";
+    const params = [];
+    if (kecamatan) { where += " AND p.kecamatan = ?"; params.push(kecamatan); }
+
+    const results = await dbAll(
+      db,
+      `SELECT ud.id, p.nik, p.kecamatan, p.kelurahan, ud.field, ud.nilai_lama, ud.nilai_baru, ud.username, ud.dicatat_pada, p.nama
+       FROM ubah_data_log ud JOIN pemilih p ON p.id = ud.pemilih_id ${where}
+       ORDER BY ud.dicatat_pada DESC LIMIT ? OFFSET ?`,
+      [...params, PAGE_SIZE, offset]
+    );
+    const countRow = await dbFirst(
+      db,
+      `SELECT COUNT(*) as total FROM ubah_data_log ud JOIN pemilih p ON p.id = ud.pemilih_id ${where}`,
+      params
+    );
+
+    return json({ data: results, total: countRow.total, page, pageSize: PAGE_SIZE });
+  }
+
   return json({ error: "Endpoint modul pemilih belum dipindahkan: " + path }, 501);
 }
 
