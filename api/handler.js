@@ -1,11 +1,23 @@
-// api/[...path].js
-// Menangani semua /api/* (Vercel catch-all dynamic route). Jalan di Edge Runtime supaya
+// api/handler.js
+// Menangani semua /api/* (diarahkan lewat rewrites di vercel.json). Jalan di Edge Runtime supaya
 // Web Crypto API (dipakai lib/auth.js) tetap tersedia native, sama seperti di Cloudflare Workers.
 export const config = { runtime: "edge" };
 
 import { verifyPassword, createSessionToken, verifySessionToken } from "../lib/auth.js";
 import { getCentralDb, resolveKabkotaDb, dbAll, dbFirst, dbRun } from "../lib/db.js";
 import { TMS_LABELS, DISABILITAS_LABELS } from "../lib/labels.js";
+
+const PAGE_SIZE = 50;
+const MAX_BULK_NIK = 100; // dibatasi lebih ketat karena pencarian LIKE per-NIK men-scan seluruh tabel tiap token
+const EDITABLE_FIELDS = [
+  "nkk", "nik", "nama", "tempat_lahir", "tanggal_lahir", "sts_kawin", "kelamin",
+  "alamat", "rt", "rw", "tps", "disabilitas", "ektp", "keterangan", "sumber",
+];
+const INPUT_COLS = [
+  "kelurahan", "nkk", "nik", "nama", "tempat_lahir", "tanggal_lahir",
+  "sts_kawin", "kelamin", "alamat", "rt", "rw", "disabilitas", "ektp",
+  "keterangan", "sumber", "tps",
+];
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -343,7 +355,205 @@ async function handlePemilihApi(request, url, db, user) {
     return json({ ok: true, data });
   }
 
-  // TODO kelompok berikutnya: CRUD data pemilih inti, TMS & deteksi ganda, infografis.
+  // ---- TAB DATA: cari/list pemilih (support pencarian NIK massal) ----
+  if (path === "/api/pemilih/data" && method === "GET") {
+    const kecamatan = url.searchParams.get("kecamatan");
+    const kelurahan = url.searchParams.get("kelurahan");
+    const tps = url.searchParams.get("tps");
+    const search = url.searchParams.get("search");
+    const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+
+    const nikTokens = search
+      ? [...new Set(search.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean))]
+      : [];
+    const isBulk = nikTokens.length > 1;
+
+    if (isBulk && nikTokens.length > MAX_BULK_NIK) {
+      return json({ error: `Maksimal ${MAX_BULK_NIK} NIK sekali cari. Anda memasukkan ${nikTokens.length} NIK — coba bagi jadi beberapa kali pencarian.` }, 400);
+    }
+    if (!kecamatan && nikTokens.length === 0) {
+      return json({ error: "Pilih kecamatan, atau isi NIK untuk cari (boleh lebih dari satu NIK, dipisah baris baru atau koma)" }, 400);
+    }
+
+    const offset = (page - 1) * PAGE_SIZE;
+    let where = "WHERE 1=1";
+    const params = [];
+    if (kecamatan) { where += " AND kecamatan = ?"; params.push(kecamatan); }
+    if (kelurahan) { where += " AND kelurahan = ?"; params.push(kelurahan); }
+    if (tps) { where += " AND tps = ?"; params.push(tps); }
+
+    if (isBulk) {
+      where += ` AND (${nikTokens.map(() => "nik LIKE ?").join(" OR ")})`;
+      params.push(...nikTokens.map((t) => `%${t}%`));
+    } else if (nikTokens.length === 1) {
+      where += " AND nik LIKE ?";
+      params.push(`%${nikTokens[0]}%`);
+    }
+
+    const baseQuery = `SELECT id, kecamatan, kelurahan, nkk, nik, nama, tempat_lahir, tanggal_lahir,
+                          sts_kawin, kelamin, alamat, rt, rw, disabilitas, ektp, keterangan,
+                          sumber, tps, kode_tms, tanggal_tms, tanggal_input
+                   FROM pemilih ${where} ORDER BY nama`;
+
+    if (isBulk) {
+      const results = await dbAll(db, baseQuery, params);
+      const notFound = nikTokens.filter(
+        (token) => !results.some((r) => (r.nik || "").replace(/\s/g, "").includes(token.replace(/\s/g, "")))
+      );
+      return json({ data: results, total: results.length, page: 1, pageSize: results.length, bulk: true, searchedCount: nikTokens.length, notFound });
+    }
+
+    const results = await dbAll(db, `${baseQuery} LIMIT ? OFFSET ?`, [...params, PAGE_SIZE, offset]);
+    const countRow = await dbFirst(db, `SELECT COUNT(*) as total FROM pemilih ${where}`, params);
+    return json({ data: results, total: countRow.total, page, pageSize: PAGE_SIZE, bulk: false });
+  }
+
+  // ---- TAB DATA: tandai/ubah kode TMS satu pemilih ----
+  if (path === "/api/pemilih/data" && method === "POST") {
+    const { id, kode_tms } = await request.json();
+    if (!id) return json({ error: "id wajib diisi" }, 400);
+
+    const row = await dbFirst(db, "SELECT id, kode_tms FROM pemilih WHERE id = ?", [id]);
+    if (!row) return json({ error: "Data pemilih tidak ditemukan" }, 404);
+
+    const kodeBaru = kode_tms === "" || kode_tms === null || kode_tms === undefined ? null : String(kode_tms);
+
+    await dbRun(db, "UPDATE pemilih SET kode_tms = ?, tanggal_tms = datetime('now') WHERE id = ?", [kodeBaru, id]);
+    await dbRun(
+      db,
+      `INSERT INTO tms_log (pemilih_id, kode_tms_lama, kode_tms_baru, username) VALUES (?, ?, ?, ?)`,
+      [id, row.kode_tms, kodeBaru, user.username]
+    );
+
+    return json({ ok: true });
+  }
+
+  // ---- Edit inline field pemilih (dicatat sebagai riwayat di ubah_data_log) ----
+  if (path === "/api/pemilih/data/update" && method === "POST") {
+    const { id, changes } = await request.json();
+    if (!id || !changes || typeof changes !== "object") {
+      return json({ error: "id dan changes wajib diisi" }, 400);
+    }
+
+    const fieldsToUpdate = Object.keys(changes).filter((f) => EDITABLE_FIELDS.includes(f));
+    if (fieldsToUpdate.length === 0) return json({ error: "Tidak ada field valid yang diubah" }, 400);
+
+    const row = await dbFirst(db, "SELECT * FROM pemilih WHERE id = ?", [id]);
+    if (!row) return json({ error: "Data pemilih tidak ditemukan" }, 404);
+
+    const actuallyChanged = fieldsToUpdate.filter((f) => String(row[f] ?? "") !== String(changes[f] ?? ""));
+    if (actuallyChanged.length === 0) return json({ ok: true, changed: [] });
+
+    const setClause = actuallyChanged.map((f) => `${f} = ?`).join(", ");
+    const values = actuallyChanged.map((f) => (changes[f] === "" ? null : changes[f]));
+    await dbRun(db, `UPDATE pemilih SET ${setClause} WHERE id = ?`, [...values, id]);
+
+    for (const f of actuallyChanged) {
+      await dbRun(
+        db,
+        `INSERT INTO ubah_data_log (pemilih_id, field, nilai_lama, nilai_baru, username) VALUES (?, ?, ?, ?, ?)`,
+        [id, f, row[f] ?? "", changes[f] ?? "", user.username]
+      );
+    }
+
+    return json({ ok: true, changed: actuallyChanged });
+  }
+
+  // ---- Input pemilih baru (banyak baris sekaligus) ----
+  if (path === "/api/pemilih/pemilih-baru" && method === "POST") {
+    const { kecamatan, rows } = await request.json();
+    if (!kecamatan) return json({ error: "kecamatan wajib diisi" }, 400);
+    if (!Array.isArray(rows) || rows.length === 0) return json({ error: "Tidak ada baris data untuk disimpan" }, 400);
+
+    for (const row of rows) {
+      const values = INPUT_COLS.map((_, i) => row[i] ?? null);
+      await dbRun(
+        db,
+        `INSERT INTO pemilih (kecamatan, ${INPUT_COLS.join(", ")}, tanggal_input)
+         VALUES (?, ${INPUT_COLS.map(() => "?").join(", ")}, datetime('now'))`,
+        [kecamatan, ...values]
+      );
+    }
+
+    return json({ ok: true, inserted: rows.length });
+  }
+
+  // ---- TAB PEMILIH MS (yang masih memenuhi syarat, kode_tms kosong) ----
+  if (path === "/api/pemilih/pemilih-ms" && method === "GET") {
+    const kecamatan = url.searchParams.get("kecamatan");
+    const kelurahan = url.searchParams.get("kelurahan");
+    const tps = url.searchParams.get("tps");
+    const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+    const offset = (page - 1) * PAGE_SIZE;
+
+    if (!kecamatan) return json({ error: "Parameter kecamatan wajib diisi" }, 400);
+
+    let where = "WHERE kecamatan = ? AND kode_tms IS NULL";
+    const params = [kecamatan];
+    if (kelurahan) { where += " AND kelurahan = ?"; params.push(kelurahan); }
+    if (tps) { where += " AND tps = ?"; params.push(tps); }
+
+    const query = `SELECT id, kecamatan, kelurahan, nkk, nik, nama, tempat_lahir, tanggal_lahir,
+                          sts_kawin, kelamin, alamat, rt, rw, disabilitas, ektp, keterangan, sumber, tps, tanggal_input
+                   FROM pemilih ${where} ORDER BY nama LIMIT ? OFFSET ?`;
+    const results = await dbAll(db, query, [...params, PAGE_SIZE, offset]);
+    const countRow = await dbFirst(db, `SELECT COUNT(*) as total FROM pemilih ${where}`, params);
+
+    return json({ data: results, total: countRow.total, page, pageSize: PAGE_SIZE });
+  }
+
+  // ---- Daftar pemilih berusia >= 100 tahun (deteksi data janggal) ----
+  if (path === "/api/pemilih/pemilih-100" && method === "GET") {
+    const kecamatan = url.searchParams.get("kecamatan");
+    if (!kecamatan) return json({ error: "Parameter kecamatan wajib diisi" }, 400);
+
+    const data = await withCache(["pemilih-100", user.kabkotaKode, kecamatan], 600, async () => {
+      const currentYear = new Date().getFullYear();
+      const results = await dbAll(
+        db,
+        `SELECT id, kecamatan, kelurahan, nkk, nik, nama, tempat_lahir, tanggal_lahir, kelamin, alamat, tps,
+                (? - CAST(substr(tanggal_lahir, 7, 4) AS INTEGER)) as perkiraan_umur
+         FROM pemilih
+         WHERE kecamatan = ? AND kode_tms IS NULL
+           AND tanggal_lahir LIKE '__/__/____'
+           AND (? - CAST(substr(tanggal_lahir, 7, 4) AS INTEGER)) >= 100
+         ORDER BY perkiraan_umur DESC`,
+        [currentYear, kecamatan, currentYear]
+      );
+      return { data: results };
+    });
+    return json(data);
+  }
+
+  // ---- Filter helper: daftar kelurahan dalam 1 kecamatan ----
+  if (path === "/api/pemilih/kelurahan" && method === "GET") {
+    const kecamatan = url.searchParams.get("kecamatan");
+    if (!kecamatan) return json({ error: "Parameter kecamatan wajib diisi" }, 400);
+
+    const data = await withCache(["kelurahan", user.kabkotaKode, kecamatan], 900, async () => {
+      const results = await dbAll(db, "SELECT DISTINCT kelurahan FROM pemilih WHERE kecamatan = ? ORDER BY kelurahan", [kecamatan]);
+      return { kelurahan: results.map((r) => r.kelurahan).filter(Boolean) };
+    });
+    return json(data);
+  }
+
+  // ---- Filter helper: daftar TPS dalam 1 kecamatan (opsional per kelurahan) ----
+  if (path === "/api/pemilih/tps" && method === "GET") {
+    const kecamatan = url.searchParams.get("kecamatan");
+    const kelurahan = url.searchParams.get("kelurahan");
+    if (!kecamatan) return json({ error: "Parameter kecamatan wajib diisi" }, 400);
+
+    const data = await withCache(["tps", user.kabkotaKode, kecamatan, kelurahan || "_"], 900, async () => {
+      let where = "WHERE kecamatan = ?";
+      const params = [kecamatan];
+      if (kelurahan) { where += " AND kelurahan = ?"; params.push(kelurahan); }
+      const results = await dbAll(db, `SELECT DISTINCT tps FROM pemilih ${where} ORDER BY CAST(tps AS INTEGER)`, params);
+      return { tps: results.map((r) => r.tps).filter(Boolean) };
+    });
+    return json(data);
+  }
+
+  // TODO kelompok berikutnya: TMS list/rekap, deteksi ganda, infografis.
   return json({ error: "Endpoint modul pemilih belum dipindahkan: " + path }, 501);
 }
 
