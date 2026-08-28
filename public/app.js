@@ -1283,31 +1283,51 @@ async function renderUpInfografis(root) {
 // ================= MODUL PROVINSI =================
 
 async function renderProvinsiRekap(root) {
+  root.innerHTML = `<div class="empty-state">Memuat ringkasan seluruh Jawa Timur...</div>`;
+  let data;
+  try {
+    data = await api("/api/provinsi/ringkasan");
+  } catch (err) {
+    root.innerHTML = `<div class="card"><p style="color:#c0392b">${esc(err.message)}</p></div>`;
+    return;
+  }
+
   root.innerHTML = `
     <div class="card">
-      <h2>Rekap Lintas Kab/Kota</h2>
-      <p class="card-desc">Data di sini bersumber dari cron rekap harian (belum berjalan otomatis di versi ini -- lihat README bagian cron).</p>
-      <div class="field-row">
-        <div class="field"><label>Periode (YYYY-MM)</label><input id="prov-periode" value="${new Date().toISOString().slice(0,7)}" /></div>
-        <div class="field"><label>Modul</label><select id="prov-modul"><option value="pemilih">pemilih</option><option value="uji_petik">uji_petik</option></select></div>
-        <div class="field" style="align-self:flex-end"><button class="btn" id="btn-load-prov">Muat</button></div>
-      </div>
-      <div id="prov-body"></div>
+      <h2 style="font-size:20px">INFOGRAFIS HASIL PENGAWASAN DATA PEMILIH BERKELANJUTAN</h2>
+      <p class="card-desc" style="margin-bottom:0">Bawaslu Provinsi Jawa Timur -- agregat langsung dari ${data.jumlahKabkota} kab/kota</p>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-box"><div class="num">${data.totalPemilih.toLocaleString("id-ID")}</div><div class="label">Total Pemilih (MS)</div></div>
+      <div class="stat-box"><div class="num">${data.totalLaki.toLocaleString("id-ID")}</div><div class="label">Laki-laki</div></div>
+      <div class="stat-box"><div class="num">${data.totalPerempuan.toLocaleString("id-ID")}</div><div class="label">Perempuan</div></div>
+      <div class="stat-box" style="background:#fdeceb"><div class="num" style="color:var(--danger)">${data.totalTms.toLocaleString("id-ID")}</div><div class="label">Total TMS</div></div>
+      <div class="stat-box"><div class="num">${data.totalDisabilitas.toLocaleString("id-ID")}</div><div class="label">Total Disabilitas</div></div>
+    </div>
+    ${data.gagal.length ? `
+    <div class="card" style="border-color:var(--danger)">
+      <p style="color:var(--danger);font-size:12.5px;margin:0">Gagal memuat data dari ${data.gagal.length} kab/kota: ${data.gagal.map((g) => esc(g.nama)).join(", ")}</p>
+    </div>` : ""}
+    <div class="card">
+      <h2>Sebaran Pemilih per Kabupaten/Kota</h2>
+      <p class="card-desc">Diurutkan dari jumlah pemilih terbanyak. Kab/kota yang belum mulai input akan tampil 0.</p>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Kabupaten/Kota</th><th>Laki-laki</th><th>Perempuan</th><th>Total</th><th>TMS</th></tr></thead>
+        <tbody>${data.perKabkota.map((k) => `
+          <tr>
+            <td>${esc(k.nama)}</td>
+            <td>${k.laki.toLocaleString("id-ID")}</td>
+            <td>${k.perempuan.toLocaleString("id-ID")}</td>
+            <td><b>${(k.laki + k.perempuan).toLocaleString("id-ID")}</b></td>
+            <td>${k.tms.toLocaleString("id-ID")}</td>
+          </tr>`).join("")}</tbody>
+      </table></div>
+    </div>
+    <div class="card">
+      <button class="btn" id="btn-refresh-prov">Muat Ulang</button>
     </div>
   `;
-  qs("#btn-load-prov", root).addEventListener("click", async () => {
-    const periode = qs("#prov-periode", root).value.trim();
-    const modul = qs("#prov-modul", root).value;
-    const data = await api(`/api/provinsi/rekap?periode=${encodeURIComponent(periode)}&modul=${modul}`);
-    const body = qs("#prov-body", root);
-    if (data.length === 0) { body.innerHTML = `<div class="empty-state">Belum ada rekap untuk periode ini.</div>`; return; }
-    body.innerHTML = `
-      <div class="table-scroll"><table>
-        <thead><tr><th>Kab/Kota</th><th>Terakhir Update</th></tr></thead>
-        <tbody>${data.map((r) => `<tr><td>${esc(r.nama)}</td><td>${esc(r.updated_at)}</td></tr>`).join("")}</tbody>
-      </table></div>
-    `;
-  });
+  qs("#btn-refresh-prov", root).addEventListener("click", () => renderProvinsiRekap(root));
 }
 
 // ---------- Routing table ----------

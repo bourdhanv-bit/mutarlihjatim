@@ -1337,6 +1337,53 @@ async function handleUjiPetikApi(request, url, db, user) {
 async function handleProvinsiApi(request, url) {
   const path = url.pathname;
 
+  // ---- Ringkasan live: agregasi langsung dari 38 database kab/kota (bukan dari cron) ----
+  // Cron rekap harian belum berjalan otomatis (lihat README), jadi untuk sekarang dashboard
+  // provinsi menghitung ulang tiap kali dibuka -- cukup ringan karena cuma query agregat
+  // (COUNT/SUM), bukan tarik semua baris data pemilih.
+  if (path === "/api/provinsi/ringkasan" && request.method === "GET") {
+    const central = getCentralDb();
+    const kabkotaList = await dbAll(central, "SELECT kode, nama FROM kabkota WHERE turso_url IS NOT NULL ORDER BY nama");
+
+    const perKabkota = await Promise.all(
+      kabkotaList.map(async (k) => {
+        try {
+          const db = await resolveKabkotaDb(k.kode);
+          const row = await dbFirst(
+            db,
+            `SELECT
+               SUM(CASE WHEN kode_tms IS NULL AND kelamin = 'L' THEN 1 ELSE 0 END) as laki,
+               SUM(CASE WHEN kode_tms IS NULL AND kelamin = 'P' THEN 1 ELSE 0 END) as perempuan,
+               SUM(CASE WHEN kode_tms IS NOT NULL THEN 1 ELSE 0 END) as tms,
+               SUM(CASE WHEN kode_tms IS NULL AND disabilitas IS NOT NULL AND disabilitas != '' AND disabilitas != '0' THEN 1 ELSE 0 END) as disabilitas
+             FROM pemilih`
+          );
+          return {
+            kode: k.kode, nama: k.nama, ok: true,
+            laki: row.laki || 0, perempuan: row.perempuan || 0, tms: row.tms || 0, disabilitas: row.disabilitas || 0,
+          };
+        } catch (err) {
+          return { kode: k.kode, nama: k.nama, ok: false, laki: 0, perempuan: 0, tms: 0, disabilitas: 0, error: err.message };
+        }
+      })
+    );
+
+    const totalLaki = perKabkota.reduce((s, r) => s + r.laki, 0);
+    const totalPerempuan = perKabkota.reduce((s, r) => s + r.perempuan, 0);
+    const totalTms = perKabkota.reduce((s, r) => s + r.tms, 0);
+    const totalDisabilitas = perKabkota.reduce((s, r) => s + r.disabilitas, 0);
+    const gagal = perKabkota.filter((r) => !r.ok);
+
+    return json({
+      totalPemilih: totalLaki + totalPerempuan,
+      totalLaki, totalPerempuan, totalTms, totalDisabilitas,
+      jumlahKabkota: kabkotaList.length,
+      perKabkota: perKabkota.sort((a, b) => (b.laki + b.perempuan) - (a.laki + a.perempuan)),
+      gagal: gagal.length ? gagal.map((g) => ({ kode: g.kode, nama: g.nama })) : [],
+    });
+  }
+
+  // ---- Rekap historis dari snapshot cron (kalau nanti sudah berjalan otomatis) ----
   if (path === "/api/provinsi/rekap" && request.method === "GET") {
     const periode = url.searchParams.get("periode");
     const modul = url.searchParams.get("modul") || "pemilih";
