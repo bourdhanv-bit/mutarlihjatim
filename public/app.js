@@ -186,13 +186,25 @@ const MODULES = {
         { key: "up-infografis", label: "6. Infografis" },
       ],
     },
+    {
+      key: "dokumen",
+      sidebarLabel: "Dokumen Pengawasan",
+      logo: "DP",
+      title: "DOKUMEN PENGAWASAN",
+      subtitle: () => `Bawaslu ${formatKabkota(state.user.kabkota)}`,
+      tabs: [
+        { key: "dok-saran_perbaikan", label: "Saran Perbaikan" },
+        { key: "dok-imbauan", label: "Imbauan" },
+        { key: "dok-form_a", label: "Form A" },
+      ],
+    },
   ],
   admin_provinsi: [
     {
       key: "provinsi",
-      sidebarLabel: "Rekap Provinsi",
-      logo: "RP",
-      title: "REKAP PROVINSI",
+      sidebarLabel: "AWASI MUTARLIH",
+      logo: "AM",
+      title: "AWASI MUTARLIH",
       subtitle: () => "Bawaslu Provinsi Jawa Timur",
       tabs: [
         { key: "provinsi-rekap", label: "Pemutakhiran Data Pemilih" },
@@ -1690,6 +1702,146 @@ async function renderProvinsiUjiPetik(root, selectedTriwulan) {
 }
 
 // ---------- Routing table ----------
+// ================= MODUL DOKUMEN PENGAWASAN =================
+
+const BULAN_NAMA = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
+const DOKUMEN_LABELS = { saran_perbaikan: "Saran Perbaikan", imbauan: "Imbauan", form_a: "Form A" };
+
+async function apiUpload(path, formData) {
+  const res = await fetch(path, { method: "POST", credentials: "include", body: formData });
+  let data;
+  try { data = await res.json(); } catch { data = null; }
+  if (!res.ok) throw new Error((data && data.error) || `Upload gagal (${res.status})`);
+  return data;
+}
+
+function formatUkuran(bytes) {
+  if (!bytes) return "-";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function renderDokumenSection(kategori) {
+  return async function (root) {
+    const label = DOKUMEN_LABELS[kategori];
+    const now = new Date();
+    let selectedTahun = now.getFullYear();
+
+    root.innerHTML = `
+      <div class="card">
+        <h2>Upload Dokumen ${esc(label)}</h2>
+        <p class="card-desc">Maksimal 5MB per file. Dokumen otomatis disusun per folder Tahun &gt; Bulan.</p>
+        <div class="field-row">
+          <div class="field"><label>Tahun</label><input id="dok-up-tahun" type="number" value="${now.getFullYear()}" /></div>
+          <div class="field"><label>Bulan</label>
+            <select id="dok-up-bulan">${BULAN_NAMA.map((b, i) => `<option value="${i + 1}" ${i + 1 === now.getMonth() + 1 ? "selected" : ""}>${b}</option>`).join("")}</select>
+          </div>
+          <div class="field" style="flex:2"><label>Keterangan (opsional)</label><input id="dok-up-keterangan" /></div>
+        </div>
+        <div class="field-row">
+          <div class="field" style="flex:2"><label>File</label><input id="dok-up-file" type="file" /></div>
+          <div class="field" style="align-self:flex-end"><button class="btn btn-orange" id="btn-upload-dok">Upload</button></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Folder Tahun</h2>
+        <div class="field-row">
+          <div class="field" style="max-width:200px"><label>Pilih Tahun</label><input id="dok-tahun-filter" type="number" value="${now.getFullYear()}" /></div>
+          <div class="field" style="align-self:flex-end"><button class="btn" id="btn-load-dok-tahun">Muat</button></div>
+        </div>
+        <div id="dok-bulan-grid"></div>
+      </div>
+      <div id="dok-file-list"></div>
+    `;
+
+    let allDocs = [];
+    async function loadTahun() {
+      selectedTahun = Number(qs("#dok-tahun-filter", root).value) || now.getFullYear();
+      const data = await api(`/api/dokumen?kategori=${kategori}`);
+      allDocs = data.data;
+      const gridEl = qs("#dok-bulan-grid", root);
+      const countByBulan = {};
+      for (const d of allDocs) {
+        if (d.tahun !== selectedTahun) continue;
+        countByBulan[d.bulan] = (countByBulan[d.bulan] || 0) + 1;
+      }
+      gridEl.innerHTML = `
+        <div class="stat-grid">
+          ${BULAN_NAMA.map((b, i) => `
+            <div class="stat-box folder-bulan" data-bulan="${i + 1}" style="cursor:pointer">
+              <div class="num">${countByBulan[i + 1] || 0}</div>
+              <div class="label">${b} ${selectedTahun}</div>
+            </div>
+          `).join("")}
+        </div>
+      `;
+      qsa(".folder-bulan", gridEl).forEach((box) => {
+        box.addEventListener("click", () => showFileList(Number(box.dataset.bulan)));
+      });
+      qs("#dok-file-list", root).innerHTML = "";
+    }
+
+    function showFileList(bulan) {
+      const files = allDocs.filter((d) => d.tahun === selectedTahun && d.bulan === bulan);
+      const listEl = qs("#dok-file-list", root);
+      listEl.innerHTML = `
+        <div class="card">
+          <h2>${esc(label)} -- ${BULAN_NAMA[bulan - 1]} ${selectedTahun}</h2>
+          ${files.length === 0 ? `<div class="empty-state">Belum ada dokumen di folder ini.</div>` : `
+          <div class="table-scroll"><table>
+            <thead><tr><th>Nama File</th><th>Ukuran</th><th>Keterangan</th><th>Diupload Oleh</th><th>Tanggal</th><th></th></tr></thead>
+            <tbody>${files.map((f) => `
+              <tr>
+                <td>${esc(f.nama_file)}</td>
+                <td>${formatUkuran(f.ukuran)}</td>
+                <td>${esc(f.keterangan || "-")}</td>
+                <td>${esc(f.diupload_oleh)}</td>
+                <td>${esc(f.diupload_pada)}</td>
+                <td>
+                  <a class="btn btn-sm" href="/api/dokumen/download?id=${f.id}" target="_blank">Unduh</a>
+                  <button class="btn btn-sm btn-danger" data-del-dok="${f.id}">Hapus</button>
+                </td>
+              </tr>`).join("")}</tbody>
+          </table></div>`}
+        </div>
+      `;
+      qsa("[data-del-dok]", listEl).forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            await api(`/api/dokumen?id=${btn.dataset.delDok}`, { method: "DELETE" });
+            toast("Dokumen dihapus");
+            await loadTahun();
+            showFileList(bulan);
+          } catch (err) { toast(err.message, true); }
+        });
+      });
+    }
+
+    qs("#btn-load-dok-tahun", root).addEventListener("click", loadTahun);
+    qs("#btn-upload-dok", root).addEventListener("click", async () => {
+      const fileInput = qs("#dok-up-file", root);
+      const file = fileInput.files[0];
+      if (!file) return toast("Pilih file dulu", true);
+      const fd = new FormData();
+      fd.append("kategori", kategori);
+      fd.append("tahun", qs("#dok-up-tahun", root).value);
+      fd.append("bulan", qs("#dok-up-bulan", root).value);
+      fd.append("keterangan", qs("#dok-up-keterangan", root).value);
+      fd.append("file", file);
+      try {
+        await apiUpload("/api/dokumen", fd);
+        toast("Dokumen berhasil diupload");
+        fileInput.value = "";
+        qs("#dok-up-keterangan", root).value = "";
+        await loadTahun();
+      } catch (err) { toast(err.message, true); }
+    });
+
+    await loadTahun();
+  };
+}
+
 const SECTION_RENDERERS = {
   "pemilih-cari": renderPemilihCari,
   "pemilih-input": renderPemilihInput,
@@ -1702,6 +1854,9 @@ const SECTION_RENDERERS = {
   "up-sampel-ms": renderSampelSection("ms"),
   "up-sampel-dpb": renderUpSampelDpb,
   "up-infografis": renderUpInfografis,
+  "dok-saran_perbaikan": renderDokumenSection("saran_perbaikan"),
+  "dok-imbauan": renderDokumenSection("imbauan"),
+  "dok-form_a": renderDokumenSection("form_a"),
   "provinsi-rekap": renderProvinsiRekap,
   "provinsi-uji-petik": renderProvinsiUjiPetik,
 };

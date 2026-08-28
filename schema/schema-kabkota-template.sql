@@ -174,3 +174,23 @@ CREATE TABLE sampel_dpb (
   dientri_pada TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX idx_sampel_dpb_periode ON sampel_dpb(periode);
+
+-- ================= MODUL DOKUMEN PENGAWASAN =================
+-- Upload dokumen (Saran Perbaikan, Imbauan, Form A), disusun folder Kategori > Tahun > Bulan.
+-- File disimpan sebagai base64 langsung di database (tidak ada object storage terpisah di
+-- proyek ini) -- cocok untuk dokumen ukuran wajar (dibatasi 5MB per file di level aplikasi),
+-- bukan untuk arsip video/file sangat besar.
+CREATE TABLE dokumen_pengawasan (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kategori TEXT NOT NULL,        -- 'saran_perbaikan' | 'imbauan' | 'form_a'
+  tahun INTEGER NOT NULL,
+  bulan INTEGER NOT NULL,        -- 1-12
+  nama_file TEXT NOT NULL,
+  tipe_file TEXT,                -- MIME type
+  ukuran INTEGER,                -- bytes
+  konten_base64 TEXT NOT NULL,
+  keterangan TEXT,
+  diupload_oleh TEXT,
+  diupload_pada TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_dokumen_kategori_tahun_bulan ON dokumen_pengawasan(kategori, tahun, bulan);

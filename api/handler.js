@@ -83,6 +83,13 @@ export default async function handler(request) {
       return handleUjiPetikApi(request, url, db, user);
     }
 
+    if (path.startsWith("/api/dokumen")) {
+      const { user, error } = await requireAuth(request, "admin_kabkota");
+      if (error) return error;
+      const db = await resolveKabkotaDb(user.kabkotaKode);
+      return handleDokumenApi(request, url, db, user);
+    }
+
     if (path.startsWith("/api/provinsi/")) {
       const { error } = await requireAuth(request, "admin_provinsi");
       if (error) return error;
@@ -1355,6 +1362,97 @@ async function handleUjiPetikApi(request, url, db, user) {
 }
 
 // ============== MODUL PROVINSI ==============
+
+// ============== MODUL DOKUMEN PENGAWASAN ==============
+
+const DOKUMEN_KATEGORI = ["saran_perbaikan", "imbauan", "form_a"];
+const MAX_DOKUMEN_SIZE = 5 * 1024 * 1024; // 5MB -- disimpan sebagai base64 di Turso, bukan object storage
+
+// Uint8Array -> base64, per-chunk supaya tidak overflow stack untuk file besar.
+function bytesToBase64(bytes) {
+  const CHUNK = 8192;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+function base64ToBytes(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function handleDokumenApi(request, url, db, user) {
+  const path = url.pathname;
+  const method = request.method;
+
+  // ---- Unduh 1 file (dikembalikan sebagai binary, bukan JSON) ----
+  if (path === "/api/dokumen/download" && method === "GET") {
+    const id = url.searchParams.get("id");
+    if (!id) return json({ error: "Parameter id wajib diisi" }, 400);
+    const row = await dbFirst(db, "SELECT nama_file, tipe_file, konten_base64 FROM dokumen_pengawasan WHERE id = ?", [id]);
+    if (!row) return json({ error: "Dokumen tidak ditemukan" }, 404);
+    const bytes = base64ToBytes(row.konten_base64);
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        "Content-Type": row.tipe_file || "application/octet-stream",
+        "Content-Disposition": `attachment; filename="${row.nama_file.replace(/"/g, "")}"`,
+      },
+    });
+  }
+
+  // ---- Daftar dokumen 1 kategori (tanpa konten base64 -- ringan) ----
+  if (path === "/api/dokumen" && method === "GET") {
+    const kategori = url.searchParams.get("kategori");
+    if (!kategori || !DOKUMEN_KATEGORI.includes(kategori)) return json({ error: "Kategori tidak valid" }, 400);
+    const results = await dbAll(
+      db,
+      `SELECT id, tahun, bulan, nama_file, tipe_file, ukuran, keterangan, diupload_oleh, diupload_pada
+       FROM dokumen_pengawasan WHERE kategori = ? ORDER BY tahun DESC, bulan DESC, diupload_pada DESC`,
+      [kategori]
+    );
+    return json({ data: results });
+  }
+
+  // ---- Upload dokumen baru (multipart/form-data) ----
+  if (path === "/api/dokumen" && method === "POST") {
+    const form = await request.formData();
+    const kategori = form.get("kategori");
+    const tahun = Number(form.get("tahun"));
+    const bulan = Number(form.get("bulan"));
+    const keterangan = form.get("keterangan") || null;
+    const file = form.get("file");
+
+    if (!kategori || !DOKUMEN_KATEGORI.includes(kategori)) return json({ error: "Kategori tidak valid" }, 400);
+    if (!tahun || !bulan || bulan < 1 || bulan > 12) return json({ error: "Tahun/bulan tidak valid" }, 400);
+    if (!file || typeof file === "string") return json({ error: "File wajib diunggah" }, 400);
+    if (file.size > MAX_DOKUMEN_SIZE) return json({ error: `Ukuran file maksimal 5MB (file ini ${(file.size / 1024 / 1024).toFixed(1)}MB)` }, 400);
+
+    const buffer = new Uint8Array(await file.arrayBuffer());
+    const kontenBase64 = bytesToBase64(buffer);
+
+    await dbRun(
+      db,
+      `INSERT INTO dokumen_pengawasan (kategori, tahun, bulan, nama_file, tipe_file, ukuran, konten_base64, keterangan, diupload_oleh)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [kategori, tahun, bulan, file.name, file.type || null, file.size, kontenBase64, keterangan, user.username]
+    );
+    return json({ ok: true });
+  }
+
+  // ---- Hapus dokumen ----
+  if (path === "/api/dokumen" && method === "DELETE") {
+    const id = url.searchParams.get("id");
+    if (!id) return json({ error: "Parameter id wajib diisi" }, 400);
+    await dbRun(db, "DELETE FROM dokumen_pengawasan WHERE id = ?", [id]);
+    return json({ ok: true });
+  }
+
+  return json({ error: "Endpoint tidak ditemukan" }, 404);
+}
 
 async function handleProvinsiApi(request, url) {
   const path = url.pathname;

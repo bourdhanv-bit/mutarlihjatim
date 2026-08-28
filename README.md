@@ -54,8 +54,10 @@ Modul Pemilih dan modul Uji Petik sekarang **sudah 100% dipindahkan** ke `api/ha
 - **Frontend** (`public/`) belum dibuat sama sekali. Perlu: halaman login (deteksi role dari
   response `/api/login`, admin_kabkota masuk ke dashboard pemilih+uji-petik, admin_provinsi
   masuk ke dashboard rekap), lalu adaptasi `app.js`+`index.html`+`style.css` dari 2 app lama.
-- **GeoJSON tiap kabkota**: baru ada punya Malang. 37 daerah lain perlu file batas kecamatan
-  masing-masing untuk fitur peta/infografis.
+- **GeoJSON tiap kabkota**: sekarang SUDAH ADA untuk seluruh 38 kab/kota + 1 peta provinsi
+  (lihat `public/geojson/`), disederhanakan dari file asli 56MB jadi total ~2,3MB (per-kabkota
+  rata-rata puluhan KB saja, provinsi 544KB). Peta Leaflet sudah terintegrasi di Infografis
+  kedua modul (Pemilih & Uji Petik) serta dashboard provinsi.
 - **Master data kecamatan per kabkota** (tabel `kecamatan` di database central) belum diisi
   untuk kabkota manapun. Efeknya: modul Uji Petik tidak lagi menampilkan grid tetap semua
   kecamatan resmi di rekap triwulan (beda dari versi Malang lama yang hardcode 33 kecamatan) --
@@ -76,6 +78,21 @@ Modul Pemilih dan modul Uji Petik sekarang **sudah 100% dipindahkan** ke `api/ha
   `bash scripts/apply-migrasi-rekap-triwulan-v3.sh` dulu (akan mengosongkan ulang tabel itu).
 - **Checklist A-DPB1** sudah pakai teks 40 item resmi (5 kategori: Sinkronisasi, Koordinasi,
   Pemutakhiran, Rekapitulasi, Pengumuman), diambil dari template xlsx asli, bukan placeholder.
+
+## Jika Anda sudah pernah menjalankan `create-turso-databases.sh` sebelum modul Dokumen Pengawasan ada
+
+38 database yang sudah dibuat lebih dulu tidak punya tabel `dokumen_pengawasan`. Jalankan migrasi
+ini dulu sebelum pakai fitur Dokumen Pengawasan (aman dijalankan berulang, pakai `IF NOT EXISTS`):
+```
+bash scripts/apply-migrasi-dokumen-all.sh
+```
+
+## Catatan soal modul Dokumen Pengawasan
+
+File disimpan sebagai base64 langsung di database Turso (bukan object storage terpisah seperti
+Vercel Blob/S3), dibatasi maksimal **5MB per file** di level aplikasi. Ini cocok untuk dokumen
+PDF/Word ukuran wajar, tapi kalau ke depan butuh menyimpan file jauh lebih besar (video, scan
+resolusi tinggi banyak halaman), sebaiknya migrasi ke object storage terpisah.
 
 ## Jika Anda sudah pernah menjalankan `create-turso-databases.sh` sebelum modul Uji Petik selesai
 
