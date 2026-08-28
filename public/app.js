@@ -365,6 +365,7 @@ async function renderChoroplethMap(containerId, geojsonUrl, dataByName, { namePr
     },
   }).addTo(map);
 
+  map.invalidateSize();
   try { map.fitBounds(layer.getBounds(), { padding: [10, 10] }); } catch {}
 }
 
