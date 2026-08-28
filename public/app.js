@@ -209,6 +209,8 @@ const MODULES = {
       tabs: [
         { key: "provinsi-rekap", label: "Pemutakhiran Data Pemilih" },
         { key: "provinsi-uji-petik", label: "Uji Petik PDPB" },
+        { key: "provinsi-dokumen-rekap", label: "Rekap Dokumen Pengawasan" },
+        { key: "provinsi-dokumen-prop", label: "Dokumen Pengawasan Prop" },
       ],
     },
   ],
@@ -1842,6 +1844,256 @@ function renderDokumenSection(kategori) {
   };
 }
 
+async function renderProvinsiDokumen(root) {
+  root.innerHTML = `<div class="empty-state">Memuat rekap dokumen seluruh Jawa Timur...</div>`;
+  let data;
+  try {
+    data = await api("/api/provinsi/dokumen-rekap");
+  } catch (err) {
+    root.innerHTML = `<div class="card"><p style="color:#c0392b">${esc(err.message)}</p></div>`;
+    return;
+  }
+
+  root.innerHTML = `
+    <div class="card">
+      <h2 style="font-size:20px">REKAP DOKUMEN PENGAWASAN</h2>
+      <p class="card-desc" style="margin-bottom:0">Bawaslu Provinsi Jawa Timur -- jumlah dokumen per kab/kota dari ${data.jumlahKabkota} daerah. Klik angka untuk lihat/unduh dokumennya.</p>
+    </div>
+    <div class="card">
+      <div class="table-scroll"><table>
+        <thead><tr><th>No</th><th>Kabupaten/Kota</th><th>Imbauan</th><th>Saran Perbaikan</th><th>Form A</th></tr></thead>
+        <tbody>${data.perKabkota.map((k, i) => `
+          <tr>
+            <td>${i + 1}</td>
+            <td>${esc(k.nama)}</td>
+            <td>${k.imbauan > 0 ? `<a href="#" class="dok-count-link" data-kode="${k.kode}" data-kategori="imbauan" data-nama="${esc(k.nama)}">${k.imbauan}</a>` : "0"}</td>
+            <td>${k.saran_perbaikan > 0 ? `<a href="#" class="dok-count-link" data-kode="${k.kode}" data-kategori="saran_perbaikan" data-nama="${esc(k.nama)}">${k.saran_perbaikan}</a>` : "0"}</td>
+            <td>${k.form_a > 0 ? `<a href="#" class="dok-count-link" data-kode="${k.kode}" data-kategori="form_a" data-nama="${esc(k.nama)}">${k.form_a}</a>` : "0"}</td>
+          </tr>`).join("")}</tbody>
+      </table></div>
+    </div>
+  `;
+  qsa(".dok-count-link", root).forEach((link) => {
+    link.addEventListener("click", (e) => {
+      e.preventDefault();
+      renderProvinsiDokumenDetail(root, link.dataset.kode, link.dataset.kategori, link.dataset.nama);
+    });
+  });
+}
+
+async function renderProvinsiDokumenDetail(root, kode, kategori, namaKabkota) {
+  root.innerHTML = `<div class="empty-state">Memuat dokumen ${esc(namaKabkota)}...</div>`;
+  const data = await api(`/api/provinsi/dokumen?kode=${encodeURIComponent(kode)}&kategori=${kategori}`);
+  const allDocs = data.data;
+  const years = [...new Set(allDocs.map((d) => d.tahun))].sort((a, b) => b - a);
+  let selectedTahun = years[0] || new Date().getFullYear();
+
+  root.innerHTML = `
+    <div class="card">
+      <button class="btn btn-sm" id="btn-back-prov-dok" style="margin-bottom:12px">&larr; Kembali ke Rekap Dokumen</button>
+      <h2 style="font-size:18px">${esc(DOKUMEN_LABELS[kategori])} -- ${esc(namaKabkota)}</h2>
+      <div class="field-row">
+        <div class="field" style="max-width:200px"><label>Pilih Tahun</label>
+          <select id="prov-dok-tahun">${years.map((y) => `<option value="${y}">${y}</option>`).join("")}</select>
+        </div>
+      </div>
+      <div id="prov-dok-bulan-grid"></div>
+    </div>
+    <div id="prov-dok-file-list"></div>
+  `;
+  qs("#btn-back-prov-dok", root).addEventListener("click", () => renderProvinsiDokumen(root));
+
+  function renderBulanGrid() {
+    selectedTahun = Number(qs("#prov-dok-tahun", root).value);
+    const countByBulan = {};
+    for (const d of allDocs) {
+      if (d.tahun !== selectedTahun) continue;
+      countByBulan[d.bulan] = (countByBulan[d.bulan] || 0) + 1;
+    }
+    qs("#prov-dok-bulan-grid", root).innerHTML = `
+      <div class="stat-grid">
+        ${BULAN_NAMA.map((b, i) => `
+          <div class="stat-box folder-bulan" data-bulan="${i + 1}" style="cursor:pointer">
+            <div class="num">${countByBulan[i + 1] || 0}</div>
+            <div class="label">${b} ${selectedTahun}</div>
+          </div>
+        `).join("")}
+      </div>
+    `;
+    qsa(".folder-bulan", root).forEach((box) => {
+      box.addEventListener("click", () => showFileList(Number(box.dataset.bulan)));
+    });
+    qs("#prov-dok-file-list", root).innerHTML = "";
+  }
+
+  function showFileList(bulan) {
+    const files = allDocs.filter((d) => d.tahun === selectedTahun && d.bulan === bulan);
+    qs("#prov-dok-file-list", root).innerHTML = `
+      <div class="card">
+        <h2>${esc(DOKUMEN_LABELS[kategori])} -- ${BULAN_NAMA[bulan - 1]} ${selectedTahun}</h2>
+        ${files.length === 0 ? `<div class="empty-state">Belum ada dokumen di folder ini.</div>` : `
+        <div class="table-scroll"><table>
+          <thead><tr><th>Nama File</th><th>Ukuran</th><th>Keterangan</th><th>Diupload Oleh</th><th>Tanggal</th><th></th></tr></thead>
+          <tbody>${files.map((f) => `
+            <tr>
+              <td>${esc(f.nama_file)}</td>
+              <td>${formatUkuran(f.ukuran)}</td>
+              <td>${esc(f.keterangan || "-")}</td>
+              <td>${esc(f.diupload_oleh)}</td>
+              <td>${esc(f.diupload_pada)}</td>
+              <td><a class="btn btn-sm" href="/api/provinsi/dokumen/download?kode=${kode}&id=${f.id}" target="_blank">Unduh</a></td>
+            </tr>`).join("")}</tbody>
+        </table></div>`}
+      </div>
+    `;
+  }
+
+  qs("#prov-dok-tahun", root).addEventListener("change", renderBulanGrid);
+  if (years.length === 0) {
+    qs("#prov-dok-bulan-grid", root).innerHTML = `<div class="empty-state">Belum ada dokumen.</div>`;
+  } else {
+    renderBulanGrid();
+  }
+}
+
+// Dokumen Pengawasan milik PROVINSI sendiri -- 1 halaman, dengan selektor kategori di atas
+// (beda dari kab/kota yang punya 3 tab menu atas terpisah per kategori), karena provinsi cuma
+// punya 1 slot tab di sidebar untuk ini. Disimpan di database central, bukan kabkota manapun.
+async function renderProvinsiDokumenProp(root) {
+  let kategori = "saran_perbaikan";
+  const now = new Date();
+  let selectedTahun = now.getFullYear();
+  let allDocs = [];
+
+  async function loadKategori() {
+    kategori = qs("#propdok-kategori", root).value;
+    const data = await api(`/api/provinsi/dokumen-prop?kategori=${kategori}`);
+    allDocs = data.data;
+    renderBulanGrid();
+  }
+
+  function renderBulanGrid() {
+    selectedTahun = Number(qs("#propdok-tahun", root).value) || now.getFullYear();
+    const countByBulan = {};
+    for (const d of allDocs) {
+      if (d.tahun !== selectedTahun) continue;
+      countByBulan[d.bulan] = (countByBulan[d.bulan] || 0) + 1;
+    }
+    qs("#propdok-bulan-grid", root).innerHTML = `
+      <div class="stat-grid">
+        ${BULAN_NAMA.map((b, i) => `
+          <div class="stat-box folder-bulan" data-bulan="${i + 1}" style="cursor:pointer">
+            <div class="num">${countByBulan[i + 1] || 0}</div>
+            <div class="label">${b} ${selectedTahun}</div>
+          </div>
+        `).join("")}
+      </div>
+    `;
+    qsa(".folder-bulan", root).forEach((box) => {
+      box.addEventListener("click", () => showFileList(Number(box.dataset.bulan)));
+    });
+    qs("#propdok-file-list", root).innerHTML = "";
+  }
+
+  function showFileList(bulan) {
+    const files = allDocs.filter((d) => d.tahun === selectedTahun && d.bulan === bulan);
+    qs("#propdok-file-list", root).innerHTML = `
+      <div class="card">
+        <h2>${esc(DOKUMEN_LABELS[kategori])} -- ${BULAN_NAMA[bulan - 1]} ${selectedTahun}</h2>
+        ${files.length === 0 ? `<div class="empty-state">Belum ada dokumen di folder ini.</div>` : `
+        <div class="table-scroll"><table>
+          <thead><tr><th>Nama File</th><th>Ukuran</th><th>Keterangan</th><th>Diupload Oleh</th><th>Tanggal</th><th></th></tr></thead>
+          <tbody>${files.map((f) => `
+            <tr>
+              <td>${esc(f.nama_file)}</td>
+              <td>${formatUkuran(f.ukuran)}</td>
+              <td>${esc(f.keterangan || "-")}</td>
+              <td>${esc(f.diupload_oleh)}</td>
+              <td>${esc(f.diupload_pada)}</td>
+              <td>
+                <a class="btn btn-sm" href="/api/provinsi/dokumen-prop/download?id=${f.id}" target="_blank">Unduh</a>
+                <button class="btn btn-sm btn-danger" data-del-propdok="${f.id}">Hapus</button>
+              </td>
+            </tr>`).join("")}</tbody>
+        </table></div>`}
+      </div>
+    `;
+    qsa("[data-del-propdok]", root).forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await api(`/api/provinsi/dokumen-prop?id=${btn.dataset.delPropdok}`, { method: "DELETE" });
+          toast("Dokumen dihapus");
+          await loadKategori();
+          showFileList(bulan);
+        } catch (err) { toast(err.message, true); }
+      });
+    });
+  }
+
+  root.innerHTML = `
+    <div class="card">
+      <h2>Upload Dokumen Pengawasan Provinsi</h2>
+      <p class="card-desc">Maksimal 5MB per file. Dokumen milik provinsi sendiri, terpisah dari dokumen tiap kab/kota.</p>
+      <div class="field-row">
+        <div class="field"><label>Kategori</label>
+          <select id="propdok-kategori-upload">
+            <option value="saran_perbaikan">Saran Perbaikan</option>
+            <option value="imbauan">Imbauan</option>
+            <option value="form_a">Form A</option>
+          </select>
+        </div>
+        <div class="field"><label>Tahun</label><input id="propdok-up-tahun" type="number" value="${now.getFullYear()}" /></div>
+        <div class="field"><label>Bulan</label>
+          <select id="propdok-up-bulan">${BULAN_NAMA.map((b, i) => `<option value="${i + 1}" ${i + 1 === now.getMonth() + 1 ? "selected" : ""}>${b}</option>`).join("")}</select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field" style="flex:2"><label>Keterangan (opsional)</label><input id="propdok-up-keterangan" /></div>
+        <div class="field" style="flex:2"><label>File</label><input id="propdok-up-file" type="file" /></div>
+        <div class="field" style="align-self:flex-end"><button class="btn btn-orange" id="btn-upload-propdok">Upload</button></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Lihat Folder</h2>
+      <div class="field-row">
+        <div class="field"><label>Kategori</label>
+          <select id="propdok-kategori">
+            <option value="saran_perbaikan">Saran Perbaikan</option>
+            <option value="imbauan">Imbauan</option>
+            <option value="form_a">Form A</option>
+          </select>
+        </div>
+        <div class="field" style="max-width:200px"><label>Tahun</label><input id="propdok-tahun" type="number" value="${now.getFullYear()}" /></div>
+        <div class="field" style="align-self:flex-end"><button class="btn" id="btn-load-propdok">Muat</button></div>
+      </div>
+      <div id="propdok-bulan-grid"></div>
+    </div>
+    <div id="propdok-file-list"></div>
+  `;
+
+  qs("#btn-load-propdok", root).addEventListener("click", loadKategori);
+  qs("#btn-upload-propdok", root).addEventListener("click", async () => {
+    const fileInput = qs("#propdok-up-file", root);
+    const file = fileInput.files[0];
+    if (!file) return toast("Pilih file dulu", true);
+    const fd = new FormData();
+    fd.append("kategori", qs("#propdok-kategori-upload", root).value);
+    fd.append("tahun", qs("#propdok-up-tahun", root).value);
+    fd.append("bulan", qs("#propdok-up-bulan", root).value);
+    fd.append("keterangan", qs("#propdok-up-keterangan", root).value);
+    fd.append("file", file);
+    try {
+      await apiUpload("/api/provinsi/dokumen-prop", fd);
+      toast("Dokumen berhasil diupload");
+      fileInput.value = "";
+      qs("#propdok-up-keterangan", root).value = "";
+      if (qs("#propdok-kategori", root).value === qs("#propdok-kategori-upload", root).value) await loadKategori();
+    } catch (err) { toast(err.message, true); }
+  });
+
+  await loadKategori();
+}
+
 const SECTION_RENDERERS = {
   "pemilih-cari": renderPemilihCari,
   "pemilih-input": renderPemilihInput,
@@ -1859,6 +2111,8 @@ const SECTION_RENDERERS = {
   "dok-form_a": renderDokumenSection("form_a"),
   "provinsi-rekap": renderProvinsiRekap,
   "provinsi-uji-petik": renderProvinsiUjiPetik,
+  "provinsi-dokumen-rekap": renderProvinsiDokumen,
+  "provinsi-dokumen-prop": renderProvinsiDokumenProp,
 };
 
 // ---------- Init ----------

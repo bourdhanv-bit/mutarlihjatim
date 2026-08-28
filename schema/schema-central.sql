@@ -39,3 +39,21 @@ CREATE TABLE rekap_provinsi (
   updated_at TEXT DEFAULT (datetime('now')),
   UNIQUE(kabkota_id, periode, modul)
 );
+
+-- Dokumen Pengawasan milik PROVINSI sendiri (bukan milik kab/kota manapun) -- struktur sama
+-- persis dengan dokumen_pengawasan di tiap database kabkota, tapi disimpan di central karena
+-- provinsi bukan salah satu dari 38 kabkota.
+CREATE TABLE dokumen_pengawasan_provinsi (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kategori TEXT NOT NULL,        -- 'saran_perbaikan' | 'imbauan' | 'form_a'
+  tahun INTEGER NOT NULL,
+  bulan INTEGER NOT NULL,        -- 1-12
+  nama_file TEXT NOT NULL,
+  tipe_file TEXT,
+  ukuran INTEGER,
+  konten_base64 TEXT NOT NULL,
+  keterangan TEXT,
+  diupload_oleh TEXT,
+  diupload_pada TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_dokumen_prov_kategori_tahun_bulan ON dokumen_pengawasan_provinsi(kategori, tahun, bulan);

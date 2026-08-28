@@ -86,6 +86,10 @@ ini dulu sebelum pakai fitur Dokumen Pengawasan (aman dijalankan berulang, pakai
 ```
 bash scripts/apply-migrasi-dokumen-all.sh
 ```
+Database CENTRAL juga perlu migrasi terpisah untuk tabel dokumen milik provinsi sendiri:
+```
+turso db shell mutarlihjatim-central < schema/schema-central-dokumen-migrasi-v1.sql
+```
 
 ## Catatan soal modul Dokumen Pengawasan
 

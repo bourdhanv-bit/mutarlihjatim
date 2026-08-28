@@ -91,9 +91,9 @@ export default async function handler(request) {
     }
 
     if (path.startsWith("/api/provinsi/")) {
-      const { error } = await requireAuth(request, "admin_provinsi");
+      const { user, error } = await requireAuth(request, "admin_provinsi");
       if (error) return error;
-      return handleProvinsiApi(request, url);
+      return handleProvinsiApi(request, url, user);
     }
 
     return json({ error: "Endpoint tidak ditemukan" }, 404);
@@ -1454,8 +1454,122 @@ async function handleDokumenApi(request, url, db, user) {
   return json({ error: "Endpoint tidak ditemukan" }, 404);
 }
 
-async function handleProvinsiApi(request, url) {
+async function handleProvinsiApi(request, url, user) {
   const path = url.pathname;
+
+  // ---- Dokumen Pengawasan milik PROVINSI sendiri (disimpan di central, bukan kabkota) ----
+  if (path === "/api/provinsi/dokumen-prop" && request.method === "GET") {
+    const kategori = url.searchParams.get("kategori");
+    if (!kategori || !DOKUMEN_KATEGORI.includes(kategori)) return json({ error: "Kategori tidak valid" }, 400);
+    const results = await dbAll(
+      getCentralDb(),
+      `SELECT id, tahun, bulan, nama_file, tipe_file, ukuran, keterangan, diupload_oleh, diupload_pada
+       FROM dokumen_pengawasan_provinsi WHERE kategori = ? ORDER BY tahun DESC, bulan DESC, diupload_pada DESC`,
+      [kategori]
+    );
+    return json({ data: results });
+  }
+
+  if (path === "/api/provinsi/dokumen-prop" && request.method === "POST") {
+    const form = await request.formData();
+    const kategori = form.get("kategori");
+    const tahun = Number(form.get("tahun"));
+    const bulan = Number(form.get("bulan"));
+    const keterangan = form.get("keterangan") || null;
+    const file = form.get("file");
+
+    if (!kategori || !DOKUMEN_KATEGORI.includes(kategori)) return json({ error: "Kategori tidak valid" }, 400);
+    if (!tahun || !bulan || bulan < 1 || bulan > 12) return json({ error: "Tahun/bulan tidak valid" }, 400);
+    if (!file || typeof file === "string") return json({ error: "File wajib diunggah" }, 400);
+    if (file.size > MAX_DOKUMEN_SIZE) return json({ error: `Ukuran file maksimal 5MB (file ini ${(file.size / 1024 / 1024).toFixed(1)}MB)` }, 400);
+
+    const buffer = new Uint8Array(await file.arrayBuffer());
+    const kontenBase64 = bytesToBase64(buffer);
+
+    await dbRun(
+      getCentralDb(),
+      `INSERT INTO dokumen_pengawasan_provinsi (kategori, tahun, bulan, nama_file, tipe_file, ukuran, konten_base64, keterangan, diupload_oleh)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [kategori, tahun, bulan, file.name, file.type || null, file.size, kontenBase64, keterangan, user.username]
+    );
+    return json({ ok: true });
+  }
+
+  if (path === "/api/provinsi/dokumen-prop" && request.method === "DELETE") {
+    const id = url.searchParams.get("id");
+    if (!id) return json({ error: "Parameter id wajib diisi" }, 400);
+    await dbRun(getCentralDb(), "DELETE FROM dokumen_pengawasan_provinsi WHERE id = ?", [id]);
+    return json({ ok: true });
+  }
+
+  if (path === "/api/provinsi/dokumen-prop/download" && request.method === "GET") {
+    const id = url.searchParams.get("id");
+    if (!id) return json({ error: "Parameter id wajib diisi" }, 400);
+    const row = await dbFirst(getCentralDb(), "SELECT nama_file, tipe_file, konten_base64 FROM dokumen_pengawasan_provinsi WHERE id = ?", [id]);
+    if (!row) return json({ error: "Dokumen tidak ditemukan" }, 404);
+    const bytes = base64ToBytes(row.konten_base64);
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        "Content-Type": row.tipe_file || "application/octet-stream",
+        "Content-Disposition": `attachment; filename="${row.nama_file.replace(/"/g, "")}"`,
+      },
+    });
+  }
+
+  // ---- Rekap Dokumen Pengawasan lintas 38 kab/kota (jumlah per kategori) ----
+  if (path === "/api/provinsi/dokumen-rekap" && request.method === "GET") {
+    const central = getCentralDb();
+    const kabkotaList = await dbAll(central, "SELECT kode, nama FROM kabkota WHERE turso_url IS NOT NULL ORDER BY nama");
+
+    const perKabkota = await Promise.all(
+      kabkotaList.map(async (k) => {
+        try {
+          const db = await resolveKabkotaDb(k.kode);
+          const rows = await dbAll(db, "SELECT kategori, COUNT(*) as total FROM dokumen_pengawasan GROUP BY kategori");
+          const counts = { saran_perbaikan: 0, imbauan: 0, form_a: 0 };
+          for (const r of rows) counts[r.kategori] = r.total;
+          return { kode: k.kode, nama: k.nama, ok: true, ...counts };
+        } catch (err) {
+          return { kode: k.kode, nama: k.nama, ok: false, saran_perbaikan: 0, imbauan: 0, form_a: 0 };
+        }
+      })
+    );
+    return json({ perKabkota, jumlahKabkota: kabkotaList.length });
+  }
+
+  // ---- Lihat daftar dokumen 1 kab/kota + 1 kategori (akses baca provinsi ke database kabkota) ----
+  if (path === "/api/provinsi/dokumen" && request.method === "GET") {
+    const kode = url.searchParams.get("kode");
+    const kategori = url.searchParams.get("kategori");
+    if (!kode || !kategori || !DOKUMEN_KATEGORI.includes(kategori)) return json({ error: "Parameter kode dan kategori wajib diisi/valid" }, 400);
+    const db = await resolveKabkotaDb(kode);
+    const results = await dbAll(
+      db,
+      `SELECT id, tahun, bulan, nama_file, tipe_file, ukuran, keterangan, diupload_oleh, diupload_pada
+       FROM dokumen_pengawasan WHERE kategori = ? ORDER BY tahun DESC, bulan DESC, diupload_pada DESC`,
+      [kategori]
+    );
+    return json({ data: results });
+  }
+
+  // ---- Unduh 1 dokumen milik kab/kota tertentu (dari sisi provinsi) ----
+  if (path === "/api/provinsi/dokumen/download" && request.method === "GET") {
+    const kode = url.searchParams.get("kode");
+    const id = url.searchParams.get("id");
+    if (!kode || !id) return json({ error: "Parameter kode dan id wajib diisi" }, 400);
+    const db = await resolveKabkotaDb(kode);
+    const row = await dbFirst(db, "SELECT nama_file, tipe_file, konten_base64 FROM dokumen_pengawasan WHERE id = ?", [id]);
+    if (!row) return json({ error: "Dokumen tidak ditemukan" }, 404);
+    const bytes = base64ToBytes(row.konten_base64);
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        "Content-Type": row.tipe_file || "application/octet-stream",
+        "Content-Disposition": `attachment; filename="${row.nama_file.replace(/"/g, "")}"`,
+      },
+    });
+  }
 
   // ---- Ringkasan live: agregasi langsung dari 38 database kab/kota (bukan dari cron) ----
   // Cron rekap harian belum berjalan otomatis (lihat README), jadi untuk sekarang dashboard
