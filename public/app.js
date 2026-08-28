@@ -52,9 +52,9 @@ function showApp() {
   qs("#login-screen").classList.add("hidden");
   qs("#app-screen").classList.remove("hidden");
   qs("#user-info").textContent = `${state.user.username} (${state.user.role === "admin_provinsi" ? "Provinsi" : state.user.kabkota})`;
-  renderNav();
-  const firstSection = NAV_SECTIONS[state.user.role][0].key;
-  goToSection(firstSection);
+  renderSidebar();
+  const firstModule = MODULES[state.user.role][0].key;
+  goToModule(firstModule);
 }
 
 qs("#login-form").addEventListener("submit", async (e) => {
@@ -78,33 +78,72 @@ qs("#logout-btn").addEventListener("click", async () => {
   location.reload();
 });
 
-// ---------- Navigasi ----------
-const NAV_SECTIONS = {
+// ---------- Navigasi 2 level: sidebar kiri (modul) + menu atas (tab dalam modul) ----------
+const MODULES = {
   admin_kabkota: [
-    { key: "pemilih-cari", label: "Data Pemilih" },
-    { key: "pemilih-input", label: "Input Pemilih Baru" },
-    { key: "pemilih-statistik", label: "Statistik" },
-    { key: "pemilih-tms", label: "Data TMS" },
-    { key: "up-checklist", label: "Checklist A-DPB1" },
-    { key: "up-rekap", label: "Rekap Triwulan A-DPB2" },
-    { key: "up-sampel-tms", label: "Sampel TMS" },
-    { key: "up-sampel-ms", label: "Sampel Pemilih Baru" },
-    { key: "up-sampel-dpb", label: "Sampel DPB" },
-    { key: "up-infografis", label: "Infografis" },
+    {
+      key: "pemilih",
+      label: "Pemutakhiran Data Pemilih",
+      tabs: [
+        { key: "pemilih-cari", label: "Data Pemilih" },
+        { key: "pemilih-input", label: "Input Pemilih Baru" },
+        { key: "pemilih-statistik", label: "Statistik" },
+        { key: "pemilih-tms", label: "Data TMS" },
+      ],
+    },
+    {
+      key: "uji-petik",
+      label: "Uji Petik PDPB",
+      tabs: [
+        { key: "up-checklist", label: "Checklist A-DPB1" },
+        { key: "up-rekap", label: "Rekap Triwulan A-DPB2" },
+        { key: "up-sampel-tms", label: "Sampel TMS" },
+        { key: "up-sampel-ms", label: "Sampel Pemilih Baru" },
+        { key: "up-sampel-dpb", label: "Sampel DPB" },
+        { key: "up-infografis", label: "Infografis" },
+      ],
+    },
   ],
   admin_provinsi: [
-    { key: "provinsi-rekap", label: "Rekap Provinsi" },
+    {
+      key: "provinsi",
+      label: "Rekap Provinsi",
+      tabs: [{ key: "provinsi-rekap", label: "Rekap Provinsi" }],
+    },
   ],
 };
 
-function renderNav() {
-  const sections = NAV_SECTIONS[state.user.role] || [];
-  qs("#main-nav").innerHTML = sections
-    .map((s) => `<button data-section="${s.key}">${esc(s.label)}</button>`)
+function renderSidebar() {
+  const modules = MODULES[state.user.role] || [];
+  qs("#sidebar").innerHTML = modules
+    .map((m) => `<button data-module="${m.key}">${esc(m.label)}</button>`)
     .join("");
+  qsa("#sidebar button").forEach((btn) => {
+    btn.addEventListener("click", () => goToModule(btn.dataset.module));
+  });
+}
+
+function goToModule(moduleKey) {
+  state.currentModule = moduleKey;
+  qsa("#sidebar button").forEach((b) => b.classList.toggle("active", b.dataset.module === moduleKey));
+
+  const module = (MODULES[state.user.role] || []).find((m) => m.key === moduleKey);
+  const navEl = qs("#main-nav");
+
+  if (!module || module.tabs.length <= 1) {
+    // Modul dengan 1 tab saja (mis. Rekap Provinsi) -- tidak perlu baris menu atas terpisah.
+    navEl.innerHTML = "";
+    navEl.classList.add("hidden");
+    if (module) goToSection(module.tabs[0].key);
+    return;
+  }
+
+  navEl.classList.remove("hidden");
+  navEl.innerHTML = module.tabs.map((t) => `<button data-section="${t.key}">${esc(t.label)}</button>`).join("");
   qsa("#main-nav button").forEach((btn) => {
     btn.addEventListener("click", () => goToSection(btn.dataset.section));
   });
+  goToSection(module.tabs[0].key);
 }
 
 function goToSection(key) {
