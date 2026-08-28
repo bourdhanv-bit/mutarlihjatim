@@ -1383,7 +1383,62 @@ async function handleProvinsiApi(request, url) {
     });
   }
 
-  // ---- Rekap historis dari snapshot cron (kalau nanti sudah berjalan otomatis) ----
+  // ---- Ringkasan Uji Petik live: agregasi langsung dari 38 database kab/kota ----
+  if (path === "/api/provinsi/ringkasan-uji-petik" && request.method === "GET") {
+    const central = getCentralDb();
+    const kabkotaList = await dbAll(central, "SELECT kode, nama FROM kabkota WHERE turso_url IS NOT NULL ORDER BY nama");
+
+    const perKabkota = await Promise.all(
+      kabkotaList.map(async (k) => {
+        try {
+          const db = await resolveKabkotaDb(k.kode);
+          const [tmsRow, msRow, dpbRow, checklistRow, latestTwRow] = await Promise.all([
+            dbFirst(db, "SELECT COUNT(*) as total FROM sampel_tms"),
+            dbFirst(db, "SELECT COUNT(*) as total FROM sampel_ms"),
+            dbFirst(db, "SELECT COUNT(*) as total, SUM(CASE WHEN hasil = 'Sesuai' THEN 1 ELSE 0 END) as sesuai FROM sampel_dpb"),
+            dbFirst(db, "SELECT COUNT(*) as total FROM checklist_jawaban WHERE jawaban IS NOT NULL"),
+            dbFirst(db, "SELECT triwulan FROM rekap_triwulan ORDER BY triwulan DESC LIMIT 1"),
+          ]);
+
+          let hasilLaki = 0, hasilPerempuan = 0, triwulanTerakhir = null;
+          if (latestTwRow) {
+            triwulanTerakhir = latestTwRow.triwulan;
+            const rows = await dbAll(db, "SELECT hasil_akhir_laki, hasil_akhir_perempuan FROM rekap_triwulan WHERE triwulan = ?", [triwulanTerakhir]);
+            for (const r of rows) { hasilLaki += r.hasil_akhir_laki || 0; hasilPerempuan += r.hasil_akhir_perempuan || 0; }
+          }
+
+          return {
+            kode: k.kode, nama: k.nama, ok: true,
+            sampelTms: tmsRow.total || 0, sampelMs: msRow.total || 0,
+            sampelDpb: dpbRow.total || 0, sampelDpbSesuai: dpbRow.sesuai || 0,
+            checklistTerisi: checklistRow.total || 0,
+            triwulanTerakhir, hasilLaki, hasilPerempuan,
+          };
+        } catch (err) {
+          return { kode: k.kode, nama: k.nama, ok: false, sampelTms: 0, sampelMs: 0, sampelDpb: 0, sampelDpbSesuai: 0, checklistTerisi: 0, triwulanTerakhir: null, hasilLaki: 0, hasilPerempuan: 0, error: err.message };
+        }
+      })
+    );
+
+    const totalSampelTms = perKabkota.reduce((s, r) => s + r.sampelTms, 0);
+    const totalSampelMs = perKabkota.reduce((s, r) => s + r.sampelMs, 0);
+    const totalSampelDpb = perKabkota.reduce((s, r) => s + r.sampelDpb, 0);
+    const totalSampelDpbSesuai = perKabkota.reduce((s, r) => s + r.sampelDpbSesuai, 0);
+    const totalChecklistTerisi = perKabkota.reduce((s, r) => s + r.checklistTerisi, 0);
+    const totalHasilLaki = perKabkota.reduce((s, r) => s + r.hasilLaki, 0);
+    const totalHasilPerempuan = perKabkota.reduce((s, r) => s + r.hasilPerempuan, 0);
+    const kabkotaSudahMulaiChecklist = perKabkota.filter((r) => r.checklistTerisi > 0).length;
+    const gagal = perKabkota.filter((r) => !r.ok);
+
+    return json({
+      totalSampelTms, totalSampelMs, totalSampelDpb, totalSampelDpbSesuai,
+      totalChecklistTerisi, maksChecklist: kabkotaList.length * 40,
+      kabkotaSudahMulaiChecklist, jumlahKabkota: kabkotaList.length,
+      totalHasilLaki, totalHasilPerempuan, totalHasilAkhir: totalHasilLaki + totalHasilPerempuan,
+      perKabkota: perKabkota.sort((a, b) => (b.sampelTms + b.sampelMs) - (a.sampelTms + a.sampelMs)),
+      gagal: gagal.length ? gagal.map((g) => ({ kode: g.kode, nama: g.nama })) : [],
+    });
+  }
   if (path === "/api/provinsi/rekap" && request.method === "GET") {
     const periode = url.searchParams.get("periode");
     const modul = url.searchParams.get("modul") || "pemilih";

@@ -194,7 +194,10 @@ const MODULES = {
       logo: "RP",
       title: "REKAP PROVINSI",
       subtitle: () => "Bawaslu Provinsi Jawa Timur",
-      tabs: [{ key: "provinsi-rekap", label: "Rekap Provinsi" }],
+      tabs: [
+        { key: "provinsi-rekap", label: "Pemutakhiran Data Pemilih" },
+        { key: "provinsi-uji-petik", label: "Uji Petik PDPB" },
+      ],
     },
   ],
 };
@@ -1330,6 +1333,56 @@ async function renderProvinsiRekap(root) {
   qs("#btn-refresh-prov", root).addEventListener("click", () => renderProvinsiRekap(root));
 }
 
+async function renderProvinsiUjiPetik(root) {
+  root.innerHTML = `<div class="empty-state">Memuat ringkasan Uji Petik seluruh Jawa Timur...</div>`;
+  let data;
+  try {
+    data = await api("/api/provinsi/ringkasan-uji-petik");
+  } catch (err) {
+    root.innerHTML = `<div class="card"><p style="color:#c0392b">${esc(err.message)}</p></div>`;
+    return;
+  }
+
+  root.innerHTML = `
+    <div class="card">
+      <h2 style="font-size:20px">REKAP UJI PETIK PDPB</h2>
+      <p class="card-desc" style="margin-bottom:0">Bawaslu Provinsi Jawa Timur -- agregat langsung dari ${data.jumlahKabkota} kab/kota</p>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-box"><div class="num">${data.kabkotaSudahMulaiChecklist} / ${data.jumlahKabkota}</div><div class="label">Kab/Kota Sudah Isi Checklist</div></div>
+      <div class="stat-box"><div class="num">${data.totalSampelTms.toLocaleString("id-ID")}</div><div class="label">Total Sampel TMS (A-DPB5)</div></div>
+      <div class="stat-box"><div class="num">${data.totalSampelMs.toLocaleString("id-ID")}</div><div class="label">Total Sampel Pemilih Baru (A-DPB7)</div></div>
+      <div class="stat-box"><div class="num">${data.totalSampelDpb.toLocaleString("id-ID")}</div><div class="label">Total Sampel DPB (A-DPB8)</div></div>
+      <div class="stat-box"><div class="num">${data.totalHasilAkhir.toLocaleString("id-ID")}</div><div class="label">Total Hasil Akhir (triwulan terakhir tiap daerah)</div></div>
+    </div>
+    ${data.gagal.length ? `
+    <div class="card" style="border-color:var(--danger)">
+      <p style="color:var(--danger);font-size:12.5px;margin:0">Gagal memuat data dari ${data.gagal.length} kab/kota: ${data.gagal.map((g) => esc(g.nama)).join(", ")}</p>
+    </div>` : ""}
+    <div class="card">
+      <h2>Rincian per Kabupaten/Kota</h2>
+      <p class="card-desc">Diurutkan dari total sampel terbanyak. "Triwulan" menunjukkan triwulan terakhir yang sudah diisi daerah tersebut (bisa berbeda antar daerah).</p>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Kabupaten/Kota</th><th>Checklist Terisi</th><th>Sampel TMS</th><th>Sampel Baru</th><th>Sampel DPB</th><th>Triwulan Terakhir</th><th>Hasil Akhir (L/P)</th></tr></thead>
+        <tbody>${data.perKabkota.map((k) => `
+          <tr>
+            <td>${esc(k.nama)}</td>
+            <td>${k.checklistTerisi} / 40</td>
+            <td>${k.sampelTms}</td>
+            <td>${k.sampelMs}</td>
+            <td>${k.sampelDpb} (${k.sampelDpbSesuai} sesuai)</td>
+            <td>${esc(k.triwulanTerakhir || "-")}</td>
+            <td>${k.hasilLaki} / ${k.hasilPerempuan}</td>
+          </tr>`).join("")}</tbody>
+      </table></div>
+    </div>
+    <div class="card">
+      <button class="btn" id="btn-refresh-prov-up">Muat Ulang</button>
+    </div>
+  `;
+  qs("#btn-refresh-prov-up", root).addEventListener("click", () => renderProvinsiUjiPetik(root));
+}
+
 // ---------- Routing table ----------
 const SECTION_RENDERERS = {
   "pemilih-cari": renderPemilihCari,
@@ -1344,6 +1397,7 @@ const SECTION_RENDERERS = {
   "up-sampel-dpb": renderUpSampelDpb,
   "up-infografis": renderUpInfografis,
   "provinsi-rekap": renderProvinsiRekap,
+  "provinsi-uji-petik": renderProvinsiUjiPetik,
 };
 
 // ---------- Init ----------
