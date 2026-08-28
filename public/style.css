@@ -1,0 +1,252 @@
+:root {
+  --navy-950: #0b1526;
+  --navy-900: #0f1f3d;
+  --navy-800: #16294f;
+  --navy-700: #1e3563;
+  --navy-100: #e7ecf5;
+  --orange-500: #e8823c;
+  --orange-600: #d5702b;
+  --ink: #1a2230;
+  --muted: #64748b;
+  --border: #e2e8f0;
+  --bg: #f4f6fb;
+  --white: #ffffff;
+  --danger: #c0392b;
+  --success: #1f8a54;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  color: var(--ink);
+  background: var(--bg);
+}
+
+.hidden { display: none !important; }
+
+/* ---------- Login ---------- */
+.login-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 20% 20%, var(--navy-700), var(--navy-950) 70%);
+  padding: 24px;
+}
+
+.login-card {
+  background: var(--white);
+  border-radius: 16px;
+  padding: 40px 36px;
+  width: 100%;
+  max-width: 380px;
+  text-align: center;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.35);
+}
+
+.login-logo {
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
+  background: var(--orange-500);
+  color: white;
+  font-weight: 700;
+  font-size: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 16px;
+}
+
+.login-card h1 {
+  margin: 0 0 8px;
+  font-size: 22px;
+  color: var(--navy-900);
+}
+
+.login-sub {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 24px;
+}
+
+.login-card label {
+  display: block;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 14px 0 4px;
+}
+
+.login-card input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.login-card input:focus {
+  outline: 2px solid var(--orange-500);
+  outline-offset: 1px;
+  border-color: var(--orange-500);
+}
+
+.login-card button[type="submit"] {
+  width: 100%;
+  margin-top: 20px;
+  padding: 11px;
+  border: none;
+  border-radius: 8px;
+  background: var(--orange-500);
+  color: white;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+}
+.login-card button[type="submit"]:hover { background: var(--orange-600); }
+
+.error-msg {
+  color: var(--danger);
+  font-size: 13px;
+  margin-top: 12px;
+  min-height: 16px;
+}
+
+/* ---------- App shell ---------- */
+.topbar {
+  background: var(--navy-900);
+  color: white;
+  padding: 0 20px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.topbar-left { display: flex; align-items: center; gap: 10px; }
+
+.topbar-logo {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: var(--orange-500);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.topbar-title { font-weight: 600; font-size: 15px; }
+
+.topbar-right { display: flex; align-items: center; gap: 14px; font-size: 13px; }
+
+.btn-ghost {
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.3);
+  color: white;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn-ghost:hover { background: rgba(255,255,255,0.1); }
+
+.main-nav {
+  background: var(--navy-800);
+  padding: 0 20px;
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+}
+
+.main-nav button {
+  background: transparent;
+  border: none;
+  color: rgba(255,255,255,0.7);
+  padding: 12px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  border-bottom: 3px solid transparent;
+}
+.main-nav button.active {
+  color: white;
+  border-bottom-color: var(--orange-500);
+  font-weight: 600;
+}
+.main-nav button:hover { color: white; }
+
+.main-content {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 20px 60px;
+}
+
+/* ---------- Shared components ---------- */
+.card {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.card h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  color: var(--navy-900);
+}
+.card .card-desc { color: var(--muted); font-size: 12.5px; margin-bottom: 16px; }
+
+.field-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.field { flex: 1; min-width: 160px; }
+.field label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 4px; }
+.field input, .field select, .field textarea {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px;
+  font-family: var(--font);
+}
+
+.btn {
+  background: var(--navy-900); color: white; border: none; border-radius: 6px;
+  padding: 9px 18px; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.btn:hover { background: var(--navy-700); }
+.btn-orange { background: var(--orange-500); }
+.btn-orange:hover { background: var(--orange-600); }
+.btn-sm { padding: 5px 10px; font-size: 12px; }
+.btn-danger { background: var(--danger); }
+
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th { background: var(--navy-100); color: var(--navy-900); font-weight: 600; position: sticky; top: 0; }
+.table-scroll { overflow-x: auto; max-height: 420px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.stat-box { background: white; border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.stat-box .num { font-size: 22px; font-weight: 700; color: var(--navy-900); }
+.stat-box .label { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+.badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+.badge-ms { background: #e5f7ec; color: var(--success); }
+.badge-tms { background: #fdeceb; color: var(--danger); }
+
+.toast {
+  position: fixed; bottom: 20px; right: 20px; background: var(--navy-900); color: white;
+  padding: 12px 18px; border-radius: 8px; font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+  z-index: 100;
+}
+.toast.error { background: var(--danger); }
+
+.empty-state { text-align: center; color: var(--muted); padding: 32px 16px; font-size: 13px; }
+
+@media (max-width: 640px) {
+  .main-content { padding: 16px 12px 40px; }
+  th, td { font-size: 11.5px; padding: 6px; }
+}
