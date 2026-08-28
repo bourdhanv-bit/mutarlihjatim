@@ -361,6 +361,7 @@ async function handlePemilihApi(request, url, db, user) {
     const kelurahan = url.searchParams.get("kelurahan");
     const tps = url.searchParams.get("tps");
     const search = url.searchParams.get("search");
+    const nama = url.searchParams.get("nama");
     const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
 
     const nikTokens = search
@@ -371,8 +372,8 @@ async function handlePemilihApi(request, url, db, user) {
     if (isBulk && nikTokens.length > MAX_BULK_NIK) {
       return json({ error: `Maksimal ${MAX_BULK_NIK} NIK sekali cari. Anda memasukkan ${nikTokens.length} NIK — coba bagi jadi beberapa kali pencarian.` }, 400);
     }
-    if (!kecamatan && nikTokens.length === 0) {
-      return json({ error: "Pilih kecamatan, atau isi NIK untuk cari (boleh lebih dari satu NIK, dipisah baris baru atau koma)" }, 400);
+    if (!kecamatan && nikTokens.length === 0 && !nama) {
+      return json({ error: "Pilih kecamatan, isi Nama, atau isi NIK untuk cari (boleh lebih dari satu NIK, dipisah baris baru atau koma)" }, 400);
     }
 
     const offset = (page - 1) * PAGE_SIZE;
@@ -381,6 +382,7 @@ async function handlePemilihApi(request, url, db, user) {
     if (kecamatan) { where += " AND kecamatan = ?"; params.push(kecamatan); }
     if (kelurahan) { where += " AND kelurahan = ?"; params.push(kelurahan); }
     if (tps) { where += " AND tps = ?"; params.push(tps); }
+    if (nama) { where += " AND nama LIKE ?"; params.push(`%${nama}%`); }
 
     if (isBulk) {
       where += ` AND (${nikTokens.map(() => "nik LIKE ?").join(" OR ")})`;
@@ -483,6 +485,8 @@ async function handlePemilihApi(request, url, db, user) {
     const kecamatan = url.searchParams.get("kecamatan");
     const kelurahan = url.searchParams.get("kelurahan");
     const tps = url.searchParams.get("tps");
+    const nama = url.searchParams.get("nama");
+    const nik = url.searchParams.get("nik");
     const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
     const offset = (page - 1) * PAGE_SIZE;
 
@@ -492,6 +496,8 @@ async function handlePemilihApi(request, url, db, user) {
     const params = [kecamatan];
     if (kelurahan) { where += " AND kelurahan = ?"; params.push(kelurahan); }
     if (tps) { where += " AND tps = ?"; params.push(tps); }
+    if (nama) { where += " AND nama LIKE ?"; params.push(`%${nama}%`); }
+    if (nik) { where += " AND nik LIKE ?"; params.push(`%${nik}%`); }
 
     const query = `SELECT id, kecamatan, kelurahan, nkk, nik, nama, tempat_lahir, tanggal_lahir,
                           sts_kawin, kelamin, alamat, rt, rw, disabilitas, ektp, keterangan, sumber, tps, tanggal_input
@@ -567,6 +573,8 @@ async function handlePemilihApi(request, url, db, user) {
     const kecamatan = url.searchParams.get("kecamatan");
     const kelurahan = url.searchParams.get("kelurahan");
     const tps = url.searchParams.get("tps");
+    const nama = url.searchParams.get("nama");
+    const nik = url.searchParams.get("nik");
     const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
     const offset = (page - 1) * PAGE_SIZE;
 
@@ -575,6 +583,8 @@ async function handlePemilihApi(request, url, db, user) {
     if (kecamatan) { where += " AND kecamatan = ?"; params.push(kecamatan); }
     if (kelurahan) { where += " AND kelurahan = ?"; params.push(kelurahan); }
     if (tps) { where += " AND tps = ?"; params.push(tps); }
+    if (nama) { where += " AND nama LIKE ?"; params.push(`%${nama}%`); }
+    if (nik) { where += " AND nik LIKE ?"; params.push(`%${nik}%`); }
 
     const results = await dbAll(
       db,
@@ -1175,8 +1185,14 @@ async function handleUjiPetikApi(request, url, db, user) {
 
   if (sampelConfig && path === sampelConfig.prefix && method === "GET") {
     const periode = url.searchParams.get("periode");
+    const nama = url.searchParams.get("nama");
+    const nik = url.searchParams.get("nik");
     if (!periode) return json({ error: "Parameter periode wajib diisi" }, 400);
-    const results = await dbAll(db, `SELECT * FROM ${sampelConfig.table} WHERE periode = ? ORDER BY dientri_pada DESC`, [periode]);
+    let where = "WHERE periode = ?";
+    const params = [periode];
+    if (nama) { where += " AND nama LIKE ?"; params.push(`%${nama}%`); }
+    if (nik) { where += " AND nik LIKE ?"; params.push(`%${nik}%`); }
+    const results = await dbAll(db, `SELECT * FROM ${sampelConfig.table} ${where} ORDER BY dientri_pada DESC`, params);
     return json({ data: results });
   }
 
@@ -1215,8 +1231,14 @@ async function handleUjiPetikApi(request, url, db, user) {
   // ---- TAB 5: Sampel DPB A-DPB8 ----
   if (path === "/api/uji-petik/sampel-dpb" && method === "GET") {
     const periode = url.searchParams.get("periode");
+    const nama = url.searchParams.get("nama");
+    const nik = url.searchParams.get("nik");
     if (!periode) return json({ error: "Parameter periode wajib diisi" }, 400);
-    const results = await dbAll(db, "SELECT * FROM sampel_dpb WHERE periode = ? ORDER BY dientri_pada DESC", [periode]);
+    let where = "WHERE periode = ?";
+    const params = [periode];
+    if (nama) { where += " AND nama LIKE ?"; params.push(`%${nama}%`); }
+    if (nik) { where += " AND nik LIKE ?"; params.push(`%${nik}%`); }
+    const results = await dbAll(db, `SELECT * FROM sampel_dpb ${where} ORDER BY dientri_pada DESC`, params);
     return json({ data: results });
   }
   if (path === "/api/uji-petik/sampel-dpb" && method === "POST") {

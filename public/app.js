@@ -376,10 +376,12 @@ async function renderPemilihCari(root) {
         <div class="field"><label>Kecamatan</label><select id="f-kecamatan"><option value="">Memuat...</option></select></div>
         <div class="field"><label>Desa/Kelurahan</label><select id="f-kelurahan"><option value="">Semua Desa/Kelurahan</option></select></div>
         <div class="field"><label>TPS</label><select id="f-tps"><option value="">Semua TPS</option></select></div>
-        <div class="field"><label>Cari NIK</label><input id="f-search" placeholder="Cari NIK..." /></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Cari Nama</label><input id="f-nama" placeholder="Cari nama..." /></div>
+        <div class="field"><label>Cari NIK</label><input id="f-search" placeholder="Cari NIK... (boleh banyak, pisah baris/koma)" /></div>
         <div class="field" style="align-self:flex-end"><button class="btn btn-orange" id="btn-cari">Cari</button></div>
       </div>
-      <p class="card-desc">Kolom NIK boleh diisi banyak sekaligus (pisah baris baru/koma) untuk cari beberapa pemilih sekaligus.</p>
     </div>
     <div id="hasil-cari"></div>
   `;
@@ -396,10 +398,12 @@ async function renderPemilihCari(root) {
     currentPage = page;
     const params = new URLSearchParams();
     const kec = kecSel.value, kel = kelSel.value, tps = tpsSel.value;
+    const nama = qs("#f-nama", root).value.trim();
     const search = qs("#f-search", root).value.trim();
     if (kec) params.set("kecamatan", kec);
     if (kel) params.set("kelurahan", kel);
     if (tps) params.set("tps", tps);
+    if (nama) params.set("nama", nama);
     if (search) params.set("search", search);
     params.set("page", page);
 
@@ -417,12 +421,12 @@ async function renderPemilihCari(root) {
           <h2>Daftar Pemilih (By Name)</h2>
           ${data.notFound && data.notFound.length ? `<p style="color:#c0392b;font-size:12.5px">NIK tidak ditemukan: ${esc(data.notFound.join(", "))}</p>` : ""}
           <div class="table-scroll"><table>
-            <thead><tr><th>Edit</th><th>Nama</th><th>NIK</th><th>Kec.</th><th>Kel.</th><th>TPS</th><th>Alamat</th><th>RT/RW</th><th>Status</th></tr></thead>
+            <thead><tr><th>Edit</th><th>Nama</th><th>NKK</th><th>NIK</th><th>Kec.</th><th>Kel.</th><th>TPS</th><th>Alamat</th><th>RT/RW</th><th>Status</th></tr></thead>
             <tbody>
               ${data.data.map((r) => `
                 <tr data-row-id="${r.id}">
                   <td><a href="#" class="edit-icon" data-id="${r.id}" title="Edit">&#9998;</a></td>
-                  <td>${esc(r.nama)}</td><td>${esc(r.nik)}</td><td>${esc(r.kecamatan)}</td>
+                  <td>${esc(r.nama)}</td><td>${esc(r.nkk)}</td><td>${esc(r.nik)}</td><td>${esc(r.kecamatan)}</td>
                   <td>${esc(r.kelurahan)}</td><td>${esc(r.tps)}</td><td>${esc(r.alamat)}</td><td>${esc(r.rt)}/${esc(r.rw)}</td>
                   <td>
                     <select data-id="${r.id}" class="tms-select">
@@ -512,92 +516,124 @@ function openEditRow(id, row, trEl) {
   });
 }
 
+// 16 kolom sesuai urutan yang dibutuhkan backend (INPUT_COLS di api/handler.js)
+const INPUT_COLUMNS = [
+  { key: "kelurahan", label: "Kelurahan" },
+  { key: "nkk", label: "NKK" },
+  { key: "nik", label: "NIK" },
+  { key: "nama", label: "Nama" },
+  { key: "tempat_lahir", label: "Tempat Lahir" },
+  { key: "tanggal_lahir", label: "Tgl Lahir (dd/mm/yyyy)" },
+  { key: "sts_kawin", label: "Sts Kawin" },
+  { key: "kelamin", label: "Kelamin" },
+  { key: "alamat", label: "Alamat" },
+  { key: "rt", label: "RT" },
+  { key: "rw", label: "RW" },
+  { key: "disabilitas", label: "Disabilitas" },
+  { key: "ektp", label: "EKTP" },
+  { key: "keterangan", label: "Keterangan" },
+  { key: "sumber", label: "Sumber" },
+  { key: "tps", label: "TPS" },
+];
+const NAMA_COL_INDEX = INPUT_COLUMNS.findIndex((c) => c.key === "nama");
+
 async function renderPemilihInput(root) {
+  const emptyRow = () => new Array(INPUT_COLUMNS.length).fill("");
+  let gridRows = Array.from({ length: 8 }, emptyRow);
+
   root.innerHTML = `
     <div class="card">
       <h2>Input Pemilih Baru</h2>
       <p class="card-desc">
-        Tempel banyak baris sekaligus dari Excel/Sheets (urutan kolom: Kelurahan, NKK, NIK, Nama,
-        Tempat Lahir, Tanggal Lahir (dd/mm/yyyy), Status Kawin, Kelamin (L/P), Alamat, RT, RW,
-        Disabilitas, EKTP, Keterangan, Sumber, TPS), atau isi manual 1 baris lewat form di bawah.
+        Tempel data langsung dari Excel/Spreadsheet ke sel manapun di tabel ini (akan otomatis
+        mengisi ke kanan &amp; ke bawah sesuai ukuran data yang ditempel, menambah baris kalau perlu).
+        Bisa juga diketik/diedit manual per sel. Baris kosong (tanpa Nama) otomatis diabaikan saat disimpan.
       </p>
       <div class="field-row">
-        <div class="field"><label>Kecamatan tujuan *</label><input id="paste-kecamatan" /></div>
-      </div>
-      <div class="field-row">
-        <div class="field" style="flex:1"><label>Tempel data di sini (pisah kolom pakai Tab, baris baru per pemilih)</label>
-          <textarea id="paste-area" rows="4" placeholder="Contoh: SUKOREJO&#9;1234...&#9;3507...&#9;Budi Santoso&#9;Malang&#9;01/01/1990&#9;Kawin&#9;L&#9;Jl. Merdeka 1&#9;01&#9;02&#9;&#9;S&#9;&#9;&#9;005"></textarea>
+        <div class="field" style="max-width:320px">
+          <label>Kecamatan tujuan *</label>
+          <input id="grid-kecamatan" list="grid-kecamatan-list" placeholder="Ketik atau pilih kecamatan..." />
+          <datalist id="grid-kecamatan-list"></datalist>
         </div>
       </div>
-      <button class="btn" id="btn-preview-paste">Pratinjau</button>
-      <div id="preview-area" style="margin-top:14px"></div>
-    </div>
-    <div class="card">
-      <h2>Atau Input Manual (1 baris)</h2>
-      <div class="field-row">
-        <div class="field"><label>Kecamatan *</label><input id="i-kecamatan" required /></div>
-        <div class="field"><label>Kelurahan</label><input id="i-kelurahan" /></div>
-        <div class="field"><label>NIK</label><input id="i-nik" /></div>
-        <div class="field"><label>Nama *</label><input id="i-nama" required /></div>
+      <div class="table-scroll" style="max-height:520px">
+        <table>
+          <thead><tr><th>No</th>${INPUT_COLUMNS.map((c) => `<th>${esc(c.label)}</th>`).join("")}<th></th></tr></thead>
+          <tbody id="grid-tbody"></tbody>
+        </table>
       </div>
-      <div class="field-row">
-        <div class="field"><label>Tempat Lahir</label><input id="i-tempat" /></div>
-        <div class="field"><label>Tanggal Lahir (dd/mm/yyyy)</label><input id="i-tgl" placeholder="dd/mm/yyyy" /></div>
-        <div class="field"><label>Kelamin</label><select id="i-kelamin"><option value="L">L</option><option value="P">P</option></select></div>
-        <div class="field"><label>TPS</label><input id="i-tps" /></div>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="btn" id="btn-add-row">+ Tambah Baris</button>
+        <button class="btn btn-orange" id="btn-save-grid">Simpan Semua</button>
       </div>
-      <div class="field-row">
-        <div class="field" style="flex:2"><label>Alamat</label><input id="i-alamat" /></div>
-        <div class="field"><label>RT</label><input id="i-rt" /></div>
-        <div class="field"><label>RW</label><input id="i-rw" /></div>
-      </div>
-      <button class="btn btn-orange" id="btn-simpan-baru">Simpan 1 Baris</button>
     </div>
   `;
 
-  // ---- Mode "Tempel dari Excel" ----
-  let pendingRows = [];
-  qs("#btn-preview-paste", root).addEventListener("click", () => {
-    const raw = qs("#paste-area", root).value;
-    const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
-    pendingRows = lines.map((line) => line.split("\t"));
-    const previewEl = qs("#preview-area", root);
-    if (pendingRows.length === 0) { previewEl.innerHTML = `<div class="empty-state">Tidak ada baris untuk dipratinjau.</div>`; return; }
-    previewEl.innerHTML = `
-      <p style="font-size:12.5px;color:var(--muted)">${pendingRows.length} baris siap disimpan.</p>
-      <div class="table-scroll"><table>
-        <thead><tr><th>Kelurahan</th><th>NIK</th><th>Nama</th><th>Tgl Lahir</th><th>Kelamin</th><th>Alamat</th><th>TPS</th></tr></thead>
-        <tbody>${pendingRows.map((r) => `<tr><td>${esc(r[0])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td><td>${esc(r[5])}</td><td>${esc(r[7])}</td><td>${esc(r[8])}</td><td>${esc(r[15])}</td></tr>`).join("")}</tbody>
-      </table></div>
-      <button class="btn btn-orange" id="btn-simpan-bulk" style="margin-top:12px">Simpan Semua Baris (${pendingRows.length})</button>
-    `;
-    qs("#btn-simpan-bulk", previewEl).addEventListener("click", async () => {
-      const kecamatan = qs("#paste-kecamatan", root).value.trim();
-      if (!kecamatan) return toast("Kecamatan tujuan wajib diisi", true);
-      try {
-        const data = await api("/api/pemilih/pemilih-baru", { method: "POST", body: JSON.stringify({ kecamatan, rows: pendingRows }) });
-        toast(`${data.inserted} baris tersimpan`);
-        qs("#paste-area", root).value = "";
-        previewEl.innerHTML = "";
-      } catch (err) { toast(err.message, true); }
+  // Isi datalist kecamatan untuk auto-lengkapi (tapi tetap boleh ketik nama baru, mis. kecamatan
+  // yang belum pernah ada datanya sama sekali).
+  try {
+    const kecData = await api("/api/pemilih/kecamatan");
+    qs("#grid-kecamatan-list", root).innerHTML = kecData.kecamatan.map((k) => `<option value="${esc(k)}"></option>`).join("");
+  } catch {}
+
+  function renderGrid() {
+    const tbody = qs("#grid-tbody", root);
+    tbody.innerHTML = gridRows.map((row, ri) => `
+      <tr>
+        <td>${ri + 1}</td>
+        ${row.map((val, ci) => `<td><input type="text" class="grid-cell" data-row="${ri}" data-col="${ci}" value="${esc(val)}" /></td>`).join("")}
+        <td><button class="btn btn-sm btn-danger" data-remove-row="${ri}" title="Hapus baris">&times;</button></td>
+      </tr>
+    `).join("");
+
+    qsa(".grid-cell", tbody).forEach((inp) => {
+      inp.addEventListener("input", () => {
+        gridRows[+inp.dataset.row][+inp.dataset.col] = inp.value;
+      });
+      inp.addEventListener("paste", (e) => {
+        const text = (e.clipboardData || window.clipboardData).getData("text");
+        if (!text.includes("\t") && !text.includes("\n")) return; // 1 nilai saja -- biarkan paste normal
+        e.preventDefault();
+        const startRow = +inp.dataset.row, startCol = +inp.dataset.col;
+        const lines = text.replace(/\r/g, "").split("\n");
+        while (lines.length && lines[lines.length - 1] === "") lines.pop();
+        lines.forEach((line, li) => {
+          const cells = line.split("\t");
+          const targetRow = startRow + li;
+          while (gridRows.length <= targetRow) gridRows.push(emptyRow());
+          cells.forEach((cellVal, ci) => {
+            const targetCol = startCol + ci;
+            if (targetCol < INPUT_COLUMNS.length) gridRows[targetRow][targetCol] = cellVal.trim();
+          });
+        });
+        renderGrid();
+      });
     });
+    qsa("[data-remove-row]", tbody).forEach((btn) => {
+      btn.addEventListener("click", () => {
+        gridRows.splice(+btn.dataset.removeRow, 1);
+        if (gridRows.length === 0) gridRows.push(emptyRow());
+        renderGrid();
+      });
+    });
+  }
+  renderGrid();
+
+  qs("#btn-add-row", root).addEventListener("click", () => {
+    gridRows.push(emptyRow());
+    renderGrid();
   });
 
-  // ---- Mode manual 1 baris ----
-  qs("#btn-simpan-baru", root).addEventListener("click", async () => {
-    const kecamatan = qs("#i-kecamatan", root).value.trim();
-    const nama = qs("#i-nama", root).value.trim();
-    if (!kecamatan || !nama) return toast("Kecamatan dan Nama wajib diisi", true);
-    const row = [
-      qs("#i-kelurahan", root).value.trim(), "", qs("#i-nik", root).value.trim(), nama,
-      qs("#i-tempat", root).value.trim(), qs("#i-tgl", root).value.trim(), "", qs("#i-kelamin", root).value,
-      qs("#i-alamat", root).value.trim(), qs("#i-rt", root).value.trim(), qs("#i-rw", root).value.trim(),
-      "", "", "", "", qs("#i-tps", root).value.trim(),
-    ];
+  qs("#btn-save-grid", root).addEventListener("click", async () => {
+    const kecamatan = qs("#grid-kecamatan", root).value.trim();
+    if (!kecamatan) return toast("Kecamatan tujuan wajib diisi", true);
+    const rows = gridRows.filter((r) => r[NAMA_COL_INDEX] && r[NAMA_COL_INDEX].trim() !== "");
+    if (rows.length === 0) return toast("Isi minimal 1 baris dengan Nama", true);
     try {
-      await api("/api/pemilih/pemilih-baru", { method: "POST", body: JSON.stringify({ kecamatan, rows: [row] }) });
-      toast("Pemilih baru tersimpan");
-      qsa("input", root).forEach((i) => (i.value = ""));
+      const data = await api("/api/pemilih/pemilih-baru", { method: "POST", body: JSON.stringify({ kecamatan, rows }) });
+      toast(`${data.inserted} baris tersimpan`);
+      gridRows = Array.from({ length: 8 }, emptyRow);
+      renderGrid();
     } catch (err) { toast(err.message, true); }
   });
 }
@@ -797,6 +833,10 @@ async function renderPemilihTms(root) {
         <div class="field"><label>Kecamatan</label><select id="tms-kecamatan"><option value="">Memuat...</option></select></div>
         <div class="field"><label>Desa/Kelurahan</label><select id="tms-kelurahan"><option value="">Semua Desa/Kelurahan</option></select></div>
         <div class="field"><label>TPS</label><select id="tms-tps"><option value="">Semua TPS</option></select></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Cari Nama</label><input id="tms-nama" placeholder="Cari nama..." /></div>
+        <div class="field"><label>Cari NIK</label><input id="tms-nik" placeholder="Cari NIK..." /></div>
         <div class="field" style="align-self:flex-end"><button class="btn btn-orange" id="btn-load-tms-list">Muat</button></div>
       </div>
       <div id="tms-list-body"></div>
@@ -844,6 +884,10 @@ async function renderPemilihTms(root) {
     if (kecSel.value) params.set("kecamatan", kecSel.value);
     if (kelSel.value) params.set("kelurahan", kelSel.value);
     if (tpsSel.value) params.set("tps", tpsSel.value);
+    const nama = qs("#tms-nama", root).value.trim();
+    const nik = qs("#tms-nik", root).value.trim();
+    if (nama) params.set("nama", nama);
+    if (nik) params.set("nik", nik);
     const listEl = qs("#tms-list-body", root);
     listEl.innerHTML = `<div class="empty-state">Memuat...</div>`;
     const data = await api(`/api/pemilih/tms/list?${params.toString()}`);
@@ -851,8 +895,8 @@ async function renderPemilihTms(root) {
     listEl.innerHTML = `
       <p style="font-size:12.5px;color:var(--muted)">Total: ${data.total}</p>
       <div class="table-scroll"><table>
-        <thead><tr><th>Nama</th><th>NIK</th><th>Kecamatan</th><th>Kelurahan</th><th>Kode TMS</th></tr></thead>
-        <tbody>${data.data.map((r) => `<tr><td>${esc(r.nama)}</td><td>${esc(r.nik)}</td><td>${esc(r.kecamatan)}</td><td>${esc(r.kelurahan)}</td><td>${esc(r.kode_tms_label)}</td></tr>`).join("")}</tbody>
+        <thead><tr><th>Nama</th><th>NKK</th><th>NIK</th><th>Kecamatan</th><th>Kelurahan</th><th>Kode TMS</th></tr></thead>
+        <tbody>${data.data.map((r) => `<tr><td>${esc(r.nama)}</td><td>${esc(r.nkk)}</td><td>${esc(r.nik)}</td><td>${esc(r.kecamatan)}</td><td>${esc(r.kelurahan)}</td><td>${esc(r.kode_tms_label)}</td></tr>`).join("")}</tbody>
       </table></div>
     `;
   });
@@ -928,6 +972,10 @@ async function renderPemilihMs(root) {
       <div class="field-row">
         <div class="field"><label>Desa/Kelurahan</label><select id="ms-kelurahan"><option value="">Semua Desa/Kelurahan</option></select></div>
         <div class="field"><label>TPS</label><select id="ms-tps"><option value="">Semua TPS</option></select></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Cari Nama</label><input id="ms-nama" placeholder="Cari nama..." /></div>
+        <div class="field"><label>Cari NIK</label><input id="ms-nik" placeholder="Cari NIK..." /></div>
         <div class="field" style="align-self:flex-end"><button class="btn btn-orange" id="btn-load-ms">Muat</button></div>
       </div>
       <div id="ms-hasil"></div>
@@ -976,6 +1024,10 @@ async function renderPemilihMs(root) {
     const params = new URLSearchParams({ kecamatan });
     if (kelSel.value) params.set("kelurahan", kelSel.value);
     if (tpsSel.value) params.set("tps", tpsSel.value);
+    const nama = qs("#ms-nama", root).value.trim();
+    const nik = qs("#ms-nik", root).value.trim();
+    if (nama) params.set("nama", nama);
+    if (nik) params.set("nik", nik);
 
     const hasilEl = qs("#ms-hasil", root);
     hasilEl.innerHTML = `<div class="empty-state">Memuat...</div>`;
@@ -985,8 +1037,8 @@ async function renderPemilihMs(root) {
       hasilEl.innerHTML = `
         <p style="font-size:12.5px;color:var(--muted)">Total: ${data.total} (halaman ${data.page})</p>
         <div class="table-scroll"><table>
-          <thead><tr><th>Nama</th><th>NIK</th><th>Kelurahan</th><th>TPS</th><th>Kelamin</th></tr></thead>
-          <tbody>${data.data.map((r) => `<tr><td>${esc(r.nama)}</td><td>${esc(r.nik)}</td><td>${esc(r.kelurahan)}</td><td>${esc(r.tps)}</td><td>${esc(r.kelamin)}</td></tr>`).join("")}</tbody>
+          <thead><tr><th>Nama</th><th>NKK</th><th>NIK</th><th>Kelurahan</th><th>TPS</th><th>Kelamin</th></tr></thead>
+          <tbody>${data.data.map((r) => `<tr><td>${esc(r.nama)}</td><td>${esc(r.nkk)}</td><td>${esc(r.nik)}</td><td>${esc(r.kelurahan)}</td><td>${esc(r.tps)}</td><td>${esc(r.kelamin)}</td></tr>`).join("")}</tbody>
         </table></div>
       `;
     } catch (err) { hasilEl.innerHTML = `<p style="color:#c0392b">${esc(err.message)}</p>`; }
@@ -1200,6 +1252,8 @@ function renderSampelSection(kind) {
         <h2>Sampel ${kind === "tms" ? "TMS (A-DPB5)" : "Pemilih Baru (A-DPB7)"}</h2>
         <div class="field-row">
           <div class="field"><label>Periode (YYYY-MM)</label><input id="sp-periode" placeholder="2026-08" /></div>
+          <div class="field"><label>Cari Nama</label><input id="sp-nama" placeholder="Cari nama..." /></div>
+          <div class="field"><label>Cari NIK</label><input id="sp-nik" placeholder="Cari NIK..." /></div>
           <div class="field" style="align-self:flex-end"><button class="btn" id="btn-load-sampel">Muat</button></div>
         </div>
         <div id="sampel-list"></div>
@@ -1234,7 +1288,12 @@ function renderSampelSection(kind) {
     async function loadList() {
       const periode = qs("#sp-periode", root).value.trim();
       if (!periode) return toast("Isi periode dulu", true);
-      const data = await api(`/api/uji-petik/${prefix}?periode=${encodeURIComponent(periode)}`);
+      const params = new URLSearchParams({ periode });
+      const nama = qs("#sp-nama", root).value.trim();
+      const nik = qs("#sp-nik", root).value.trim();
+      if (nama) params.set("nama", nama);
+      if (nik) params.set("nik", nik);
+      const data = await api(`/api/uji-petik/${prefix}?${params.toString()}`);
       const listEl = qs("#sampel-list", root);
       if (data.data.length === 0) { listEl.innerHTML = `<div class="empty-state">Belum ada sampel di periode ini.</div>`; return; }
       listEl.innerHTML = `
@@ -1315,6 +1374,15 @@ async function renderUpSampelDpb(root) {
       <div id="dpb-list"></div>
     </div>
     <div class="card">
+      <h2>Daftar Sampel DPB (By Name)</h2>
+      <div class="field-row">
+        <div class="field"><label>Cari Nama</label><input id="dpb-nama" placeholder="Cari nama..." /></div>
+        <div class="field"><label>Cari NIK</label><input id="dpb-nik" placeholder="Cari NIK..." /></div>
+        <div class="field" style="align-self:flex-end"><button class="btn" id="btn-load-dpb-list">Muat</button></div>
+      </div>
+      <div id="dpb-list-byname"></div>
+    </div>
+    <div class="card">
       <h2>Tambah Sampel DPB</h2>
       <div class="field-row">
         <div class="field"><label>Periode</label><input id="dpb-add-periode" placeholder="2026-08" /></div>
@@ -1347,7 +1415,33 @@ async function renderUpSampelDpb(root) {
       </div>
     `;
   }
+  async function loadDpbList() {
+    const periode = qs("#dpb-periode", root).value.trim();
+    if (!periode) return toast("Isi periode dulu (di kartu atas)", true);
+    const params = new URLSearchParams({ periode });
+    const nama = qs("#dpb-nama", root).value.trim();
+    const nik = qs("#dpb-nik", root).value.trim();
+    if (nama) params.set("nama", nama);
+    if (nik) params.set("nik", nik);
+    const listEl = qs("#dpb-list-byname", root);
+    listEl.innerHTML = `<div class="empty-state">Memuat...</div>`;
+    const data = await api(`/api/uji-petik/sampel-dpb?${params.toString()}`);
+    if (data.data.length === 0) { listEl.innerHTML = `<div class="empty-state">Belum ada sampel di periode ini.</div>`; return; }
+    listEl.innerHTML = `
+      <div class="table-scroll"><table>
+        <thead><tr><th>Nama</th><th>NIK</th><th>Kecamatan</th><th>Hasil</th><th>Kategori</th><th></th></tr></thead>
+        <tbody>${data.data.map((r) => `<tr><td>${esc(r.nama)}</td><td>${esc(r.nik)}</td><td>${esc(r.kecamatan)}</td><td>${esc(r.hasil)}</td><td>${esc(r.kategori_tidak_sesuai)}</td><td><button class="btn btn-sm btn-danger" data-del="${r.id}">Hapus</button></td></tr>`).join("")}</tbody>
+      </table></div>
+    `;
+    qsa("button[data-del]", listEl).forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try { await api(`/api/uji-petik/sampel-dpb?id=${btn.dataset.del}`, { method: "DELETE" }); toast("Dihapus"); loadDpbList(); }
+        catch (err) { toast(err.message, true); }
+      });
+    });
+  }
   qs("#btn-load-dpb", root).addEventListener("click", loadDpb);
+  qs("#btn-load-dpb-list", root).addEventListener("click", loadDpbList);
   qs("#btn-add-dpb", root).addEventListener("click", async () => {
     const periode = qs("#dpb-add-periode", root).value.trim();
     const nama = qs("#dpb-add-nama", root).value.trim();
