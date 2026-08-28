@@ -525,6 +525,15 @@ async function handlePemilihApi(request, url, db, user) {
     return json(data);
   }
 
+  // ---- Filter helper: daftar kecamatan yang sudah punya data di kabkota ini ----
+  if (path === "/api/pemilih/kecamatan" && method === "GET") {
+    const data = await withCache(["kecamatan-list", user.kabkotaKode], 900, async () => {
+      const results = await dbAll(db, "SELECT DISTINCT kecamatan FROM pemilih ORDER BY kecamatan");
+      return { kecamatan: results.map((r) => r.kecamatan).filter(Boolean) };
+    });
+    return json(data);
+  }
+
   // ---- Filter helper: daftar kelurahan dalam 1 kecamatan ----
   if (path === "/api/pemilih/kelurahan" && method === "GET") {
     const kecamatan = url.searchParams.get("kecamatan");
@@ -819,31 +828,42 @@ async function handlePemilihApi(request, url, db, user) {
 // SEMUA kecamatan resmi (karena tidak ada daftar tetapnya), melainkan kecamatan yang sudah pernah
 // diisi datanya di triwulan berjalan atau triwulan sebelumnya (untuk carry-forward).
 
+// Field grid A-DPB2 SESUAI FORM RESMI: PDPB Awal, 8 kategori TMS, 5 kategori Baru masing-masing
+// 1 angka total (TIDAK ada L/P split di sini -- dikonfirmasi dari template resmi Jatim). Cuma
+// Hasil Akhir yang dipecah L/P, dan itu diinput langsung, bukan hasil hitungan.
 const REKAP_TW_FIELDS = [
-  "pdpb_awal_laki", "pdpb_awal_perempuan",
-  ...TMS_CATS.flatMap((c) => [`tms_${c}_laki`, `tms_${c}_perempuan`]),
-  ...BARU_CATS.flatMap((c) => [`baru_${c}_laki`, `baru_${c}_perempuan`]),
+  "pdpb_awal",
+  ...TMS_CATS.map((c) => `tms_${c}`),
+  ...BARU_CATS.map((c) => `baru_${c}`),
 ];
 
 function withTotals(row) {
-  const awalLaki = row.pdpb_awal_laki || 0;
-  const awalPerempuan = row.pdpb_awal_perempuan || 0;
+  const awal = row.pdpb_awal || 0;
 
-  let tmsLaki = 0, tmsPerempuan = 0;
-  for (const c of TMS_CATS) { tmsLaki += row[`tms_${c}_laki`] || 0; tmsPerempuan += row[`tms_${c}_perempuan`] || 0; }
+  let tmsTotal = 0;
+  for (const c of TMS_CATS) tmsTotal += row[`tms_${c}`] || 0;
 
-  let baruLaki = 0, baruPerempuan = 0;
-  for (const c of BARU_CATS) { baruLaki += row[`baru_${c}_laki`] || 0; baruPerempuan += row[`baru_${c}_perempuan`] || 0; }
+  let baruTotal = 0;
+  for (const c of BARU_CATS) baruTotal += row[`baru_${c}`] || 0;
 
-  const hasilLaki = awalLaki - tmsLaki + baruLaki;
-  const hasilPerempuan = awalPerempuan - tmsPerempuan + baruPerempuan;
+  // Hasil akhir yang DIHITUNG (Awal - TMS + Baru) -- ini yang dibandingkan ke Hasil Akhir
+  // yang DIINPUT LANGSUNG (hasil_akhir_laki/perempuan) untuk deteksi "selisih", persis seperti
+  // kolom "selisih" di form resmi.
+  const hasilHitungTotal = awal - tmsTotal + baruTotal;
+  const hasilAkhirLaki = row.hasil_akhir_laki || 0;
+  const hasilAkhirPerempuan = row.hasil_akhir_perempuan || 0;
+  const hasilAkhirTotal = hasilAkhirLaki + hasilAkhirPerempuan;
 
   return {
     ...row,
-    pdpb_awal_total: awalLaki + awalPerempuan,
-    tms_laki_total: tmsLaki, tms_perempuan_total: tmsPerempuan, tms_total: tmsLaki + tmsPerempuan,
-    baru_laki_total: baruLaki, baru_perempuan_total: baruPerempuan, baru_total: baruLaki + baruPerempuan,
-    hasil_laki: hasilLaki, hasil_perempuan: hasilPerempuan, hasil_total: hasilLaki + hasilPerempuan,
+    pdpb_awal_total: awal,
+    tms_total: tmsTotal,
+    baru_total: baruTotal,
+    hasil_hitung_total: hasilHitungTotal,
+    hasil_akhir_laki: hasilAkhirLaki,
+    hasil_akhir_perempuan: hasilAkhirPerempuan,
+    hasil_akhir_total: hasilAkhirTotal,
+    selisih: hasilHitungTotal - hasilAkhirTotal,
   };
 }
 
@@ -882,12 +902,13 @@ async function latestTriwulan(db) {
 }
 
 // L/P per kecamatan pada triwulan tertentu -- dinamis dari data yang ada, bukan daftar tetap.
+// Pakai Hasil Akhir yang DIINPUT LANGSUNG (bukan hasil_hitung), karena itu angka resmi final.
 async function perKecamatanHasilAkhir(db, triwulan) {
   if (!triwulan) return [];
   const results = await dbAll(db, "SELECT * FROM rekap_triwulan WHERE triwulan = ?", [triwulan]);
   return results.map((row) => {
     const t = withTotals(row);
-    return { kecamatan: row.kecamatan, laki: t.hasil_laki, perempuan: t.hasil_perempuan, total: t.hasil_total };
+    return { kecamatan: row.kecamatan, laki: t.hasil_akhir_laki, perempuan: t.hasil_akhir_perempuan, total: t.hasil_akhir_total };
   });
 }
 
@@ -963,9 +984,9 @@ async function triwulanComparison(db, kecamatanFilter) {
   for (const row of results) {
     const t = withTotals(row);
     if (!byTriwulan[row.triwulan]) byTriwulan[row.triwulan] = { triwulan: row.triwulan, laki: 0, perempuan: 0, total: 0 };
-    byTriwulan[row.triwulan].laki += t.hasil_laki;
-    byTriwulan[row.triwulan].perempuan += t.hasil_perempuan;
-    byTriwulan[row.triwulan].total += t.hasil_total;
+    byTriwulan[row.triwulan].laki += t.hasil_akhir_laki;
+    byTriwulan[row.triwulan].perempuan += t.hasil_akhir_perempuan;
+    byTriwulan[row.triwulan].total += t.hasil_akhir_total;
   }
   return Object.values(byTriwulan).sort((a, b) => a.triwulan.localeCompare(b.triwulan));
 }
@@ -1040,19 +1061,25 @@ async function handleUjiPetikApi(request, url, db, user) {
       const existing = results.find((r) => r.kecamatan === kec);
       if (existing) return { ...withTotals(existing), carried_forward: false };
 
-      const base = { kecamatan: kec, triwulan, ...Object.fromEntries(REKAP_TW_FIELDS.map((f) => [f, 0])) };
+      const base = { kecamatan: kec, triwulan, ...Object.fromEntries(REKAP_TW_FIELDS.map((f) => [f, 0])), hasil_akhir_laki: 0, hasil_akhir_perempuan: 0 };
       const prev = prevByKecamatan[kec];
       let carried = false;
       if (prev) {
-        base.pdpb_awal_laki = prev.hasil_laki;
-        base.pdpb_awal_perempuan = prev.hasil_perempuan;
+        // PDPB Awal triwulan berjalan = Hasil Akhir (total) triwulan sebelumnya.
+        base.pdpb_awal = prev.hasil_akhir_total;
         carried = true;
       }
       return { ...withTotals(base), carried_forward: carried };
     });
 
     const grandRaw = Object.fromEntries(REKAP_TW_FIELDS.map((f) => [f, 0]));
-    for (const r of rows) for (const f of REKAP_TW_FIELDS) grandRaw[f] += r[f] || 0;
+    grandRaw.hasil_akhir_laki = 0;
+    grandRaw.hasil_akhir_perempuan = 0;
+    for (const r of rows) {
+      for (const f of REKAP_TW_FIELDS) grandRaw[f] += r[f] || 0;
+      grandRaw.hasil_akhir_laki += r.hasil_akhir_laki || 0;
+      grandRaw.hasil_akhir_perempuan += r.hasil_akhir_perempuan || 0;
+    }
     const grand = withTotals(grandRaw);
 
     return json({ triwulan, rows, grand, tmsCats: TMS_CATS, baruCats: BARU_CATS });
@@ -1062,13 +1089,14 @@ async function handleUjiPetikApi(request, url, db, user) {
     const { triwulan, kecamatan } = body;
     if (!triwulan || !kecamatan) return json({ error: "triwulan dan kecamatan wajib diisi" }, 400);
 
-    const values = REKAP_TW_FIELDS.map((f) => Number(body[f]) || 0);
+    const allFields = [...REKAP_TW_FIELDS, "hasil_akhir_laki", "hasil_akhir_perempuan"];
+    const values = allFields.map((f) => Number(body[f]) || 0);
     await dbRun(
       db,
-      `INSERT INTO rekap_triwulan (triwulan, kecamatan, ${REKAP_TW_FIELDS.join(", ")}, diubah_oleh)
-       VALUES (?, ?, ${REKAP_TW_FIELDS.map(() => "?").join(", ")}, ?)
+      `INSERT INTO rekap_triwulan (triwulan, kecamatan, ${allFields.join(", ")}, diubah_oleh)
+       VALUES (?, ?, ${allFields.map(() => "?").join(", ")}, ?)
        ON CONFLICT(triwulan, kecamatan) DO UPDATE SET
-         ${REKAP_TW_FIELDS.map((f) => `${f} = excluded.${f}`).join(", ")},
+         ${allFields.map((f) => `${f} = excluded.${f}`).join(", ")},
          diubah_oleh = excluded.diubah_oleh, diubah_pada = datetime('now')`,
       [triwulan, kecamatan, ...values, user.username]
     );

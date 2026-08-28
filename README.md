@@ -63,6 +63,19 @@ Modul Pemilih dan modul Uji Petik sekarang **sudah 100% dipindahkan** ke `api/ha
   kembalikan perilaku grid-selalu-lengkap: (1) isi tabel `kecamatan` di central per kabkota,
   (2) tambah endpoint fetch daftar itu, (3) sesuaikan `rekap-triwulan` GET di `api/handler.js`
   supaya union dengan daftar itu, bukan cuma dari data yang sudah ada.
+- **Peta Leaflet choropleth di Infografis** belum dibuat -- versi Malang lama punya peta
+  interaktif per kecamatan, tapi itu butuh file GeoJSON batas kecamatan yang baru ada untuk
+  Malang. 37 kabkota lain belum punya file itu. Infografis di versi ini sudah lengkap secara
+  data (semua section: per desa, disabilitas, TMS, generasi, KTP-el, usia >=100, dst) hanya
+  tanpa peta visual, ditampilkan sebagai card yang bisa diklik untuk drill-down per kecamatan.
+- **Skema Rekap Triwulan A-DPB2 sudah dikoreksi (v3)** setelah dicek ulang dari template resmi
+  Bawaslu Provinsi Jatim: PDPB Awal/TMS/Pemilih Baru masing-masing 1 angka (BUKAN dipecah L/P
+  seperti asumsi awal), dan Hasil Akhir (L/P) diinput langsung dari angka resmi KPU, bukan
+  hasil hitungan aplikasi -- aplikasi cuma menghitung "selisih" sebagai alat verifikasi. Kalau
+  Anda sempat isi data uji coba dengan skema lama (v2), jalankan
+  `bash scripts/apply-migrasi-rekap-triwulan-v3.sh` dulu (akan mengosongkan ulang tabel itu).
+- **Checklist A-DPB1** sudah pakai teks 40 item resmi (5 kategori: Sinkronisasi, Koordinasi,
+  Pemutakhiran, Rekapitulasi, Pengumuman), diambil dari template xlsx asli, bukan placeholder.
 
 ## Jika Anda sudah pernah menjalankan `create-turso-databases.sh` sebelum modul Uji Petik selesai
 

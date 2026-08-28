@@ -81,38 +81,32 @@ CREATE TABLE checklist_jawaban (
 -- Rekap triwulan A-DPB2: PDPB Awal, 8 kategori TMS, 5 kategori Pemilih Baru,
 -- masing-masing punya kolom Laki-laki/Perempuan terpisah. "Hasil Akhir" TIDAK
 -- disimpan di sini -- selalu dihitung on-the-fly (Awal - Total TMS + Total Baru).
+-- Rekap triwulan A-DPB2: SESUAI FORM RESMI (dikonfirmasi dari template A-DPB2.xlsx asli Jatim) --
+-- PDPB Awal, 8 kategori TMS, dan 5 kategori Pemilih Baru masing-masing HANYA 1 ANGKA TOTAL
+-- (form resmi TIDAK memecah L/P untuk kategori-kategori ini). Yang dipecah Laki-laki/Perempuan
+-- HANYA "Jumlah Pemilih Hasil Pemutakhiran" (Hasil Akhir) -- dan itu diinput LANGSUNG dari
+-- angka resmi KPU, bukan hasil hitungan (form resmi punya kolom "selisih" untuk verifikasi
+-- apakah Awal-TMS+Baru = Hasil Akhir, jadi App perlu hitung pembanding itu sendiri).
 CREATE TABLE rekap_triwulan (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   triwulan TEXT NOT NULL,
   kecamatan TEXT NOT NULL,
-  pdpb_awal_laki INTEGER DEFAULT 0,
-  pdpb_awal_perempuan INTEGER DEFAULT 0,
-  tms_meninggal_laki INTEGER DEFAULT 0,
-  tms_meninggal_perempuan INTEGER DEFAULT 0,
-  tms_ganda_laki INTEGER DEFAULT 0,
-  tms_ganda_perempuan INTEGER DEFAULT 0,
-  tms_belum17_laki INTEGER DEFAULT 0,
-  tms_belum17_perempuan INTEGER DEFAULT 0,
-  tms_pindah_laki INTEGER DEFAULT 0,
-  tms_pindah_perempuan INTEGER DEFAULT 0,
-  tms_tni_laki INTEGER DEFAULT 0,
-  tms_tni_perempuan INTEGER DEFAULT 0,
-  tms_polri_laki INTEGER DEFAULT 0,
-  tms_polri_perempuan INTEGER DEFAULT 0,
-  tms_wna_laki INTEGER DEFAULT 0,
-  tms_wna_perempuan INTEGER DEFAULT 0,
-  tms_dicabut_laki INTEGER DEFAULT 0,
-  tms_dicabut_perempuan INTEGER DEFAULT 0,
-  baru_genap17_laki INTEGER DEFAULT 0,
-  baru_genap17_perempuan INTEGER DEFAULT 0,
-  baru_kawin_laki INTEGER DEFAULT 0,
-  baru_kawin_perempuan INTEGER DEFAULT 0,
-  baru_tni_polri_sipil_laki INTEGER DEFAULT 0,
-  baru_tni_polri_sipil_perempuan INTEGER DEFAULT 0,
-  baru_mantan_terpidana_laki INTEGER DEFAULT 0,
-  baru_mantan_terpidana_perempuan INTEGER DEFAULT 0,
-  baru_pindah_masuk_laki INTEGER DEFAULT 0,
-  baru_pindah_masuk_perempuan INTEGER DEFAULT 0,
+  pdpb_awal INTEGER DEFAULT 0,
+  tms_meninggal INTEGER DEFAULT 0,
+  tms_ganda INTEGER DEFAULT 0,
+  tms_belum17 INTEGER DEFAULT 0,
+  tms_pindah INTEGER DEFAULT 0,
+  tms_tni INTEGER DEFAULT 0,
+  tms_polri INTEGER DEFAULT 0,
+  tms_wna INTEGER DEFAULT 0,
+  tms_dicabut INTEGER DEFAULT 0,
+  baru_genap17 INTEGER DEFAULT 0,
+  baru_kawin INTEGER DEFAULT 0,
+  baru_tni_polri_sipil INTEGER DEFAULT 0,
+  baru_mantan_terpidana INTEGER DEFAULT 0,
+  baru_pindah_masuk INTEGER DEFAULT 0,
+  hasil_akhir_laki INTEGER DEFAULT 0,      -- diinput langsung dari angka resmi KPU, bukan dihitung
+  hasil_akhir_perempuan INTEGER DEFAULT 0, -- diinput langsung dari angka resmi KPU, bukan dihitung
   diubah_oleh TEXT,
   diubah_pada TEXT DEFAULT (datetime('now')),
   UNIQUE(triwulan, kecamatan)
