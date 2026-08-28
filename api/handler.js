@@ -1406,7 +1406,17 @@ async function handleProvinsiApi(request, url) {
   }
 
   // ---- Ringkasan Uji Petik live: agregasi langsung dari 38 database kab/kota ----
+  // ---- Ringkasan Uji Petik live per TRIWULAN spesifik (bukan "terakhir tiap daerah" lagi) ----
   if (path === "/api/provinsi/ringkasan-uji-petik" && request.method === "GET") {
+    const triwulan = url.searchParams.get("triwulan");
+    if (!triwulan) return json({ error: "Parameter triwulan wajib diisi (format YYYY-Q1..YYYY-Q4)" }, 400);
+
+    // Turunkan 3 bulan (YYYY-MM) yang termasuk triwulan ini, buat filter tabel sampel yang
+    // periodenya bulanan (bukan triwulan) -- Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep, Q4=Okt-Des.
+    const [twYear, twQ] = triwulan.split("-Q").map(Number);
+    const startMonth = (twQ - 1) * 3 + 1;
+    const months = [0, 1, 2].map((i) => `${twYear}-${String(startMonth + i).padStart(2, "0")}`);
+
     const central = getCentralDb();
     const kabkotaList = await dbAll(central, "SELECT kode, nama FROM kabkota WHERE turso_url IS NOT NULL ORDER BY nama");
 
@@ -1414,30 +1424,27 @@ async function handleProvinsiApi(request, url) {
       kabkotaList.map(async (k) => {
         try {
           const db = await resolveKabkotaDb(k.kode);
-          const [tmsRow, msRow, dpbRow, checklistRow, latestTwRow] = await Promise.all([
-            dbFirst(db, "SELECT COUNT(*) as total FROM sampel_tms"),
-            dbFirst(db, "SELECT COUNT(*) as total FROM sampel_ms"),
-            dbFirst(db, "SELECT COUNT(*) as total, SUM(CASE WHEN hasil = 'Sesuai' THEN 1 ELSE 0 END) as sesuai FROM sampel_dpb"),
-            dbFirst(db, "SELECT COUNT(*) as total FROM checklist_jawaban WHERE jawaban IS NOT NULL"),
-            dbFirst(db, "SELECT triwulan FROM rekap_triwulan ORDER BY triwulan DESC LIMIT 1"),
+          const monthPlaceholders = months.map(() => "?").join(",");
+          const [tmsRow, msRow, dpbRow, checklistRow, rekapRows] = await Promise.all([
+            dbFirst(db, `SELECT COUNT(*) as total FROM sampel_tms WHERE periode IN (${monthPlaceholders})`, months),
+            dbFirst(db, `SELECT COUNT(*) as total FROM sampel_ms WHERE periode IN (${monthPlaceholders})`, months),
+            dbFirst(db, `SELECT COUNT(*) as total, SUM(CASE WHEN hasil = 'Sesuai' THEN 1 ELSE 0 END) as sesuai FROM sampel_dpb WHERE periode IN (${monthPlaceholders})`, months),
+            dbFirst(db, "SELECT COUNT(*) as total FROM checklist_jawaban WHERE triwulan = ? AND jawaban IS NOT NULL", [triwulan]),
+            dbAll(db, "SELECT hasil_akhir_laki, hasil_akhir_perempuan FROM rekap_triwulan WHERE triwulan = ?", [triwulan]),
           ]);
 
-          let hasilLaki = 0, hasilPerempuan = 0, triwulanTerakhir = null;
-          if (latestTwRow) {
-            triwulanTerakhir = latestTwRow.triwulan;
-            const rows = await dbAll(db, "SELECT hasil_akhir_laki, hasil_akhir_perempuan FROM rekap_triwulan WHERE triwulan = ?", [triwulanTerakhir]);
-            for (const r of rows) { hasilLaki += r.hasil_akhir_laki || 0; hasilPerempuan += r.hasil_akhir_perempuan || 0; }
-          }
+          let hasilLaki = 0, hasilPerempuan = 0;
+          for (const r of rekapRows) { hasilLaki += r.hasil_akhir_laki || 0; hasilPerempuan += r.hasil_akhir_perempuan || 0; }
 
           return {
             kode: k.kode, nama: k.nama, ok: true,
             sampelTms: tmsRow.total || 0, sampelMs: msRow.total || 0,
             sampelDpb: dpbRow.total || 0, sampelDpbSesuai: dpbRow.sesuai || 0,
             checklistTerisi: checklistRow.total || 0,
-            triwulanTerakhir, hasilLaki, hasilPerempuan,
+            adaRekapTriwulan: rekapRows.length > 0, hasilLaki, hasilPerempuan,
           };
         } catch (err) {
-          return { kode: k.kode, nama: k.nama, ok: false, sampelTms: 0, sampelMs: 0, sampelDpb: 0, sampelDpbSesuai: 0, checklistTerisi: 0, triwulanTerakhir: null, hasilLaki: 0, hasilPerempuan: 0, error: err.message };
+          return { kode: k.kode, nama: k.nama, ok: false, sampelTms: 0, sampelMs: 0, sampelDpb: 0, sampelDpbSesuai: 0, checklistTerisi: 0, adaRekapTriwulan: false, hasilLaki: 0, hasilPerempuan: 0, error: err.message };
         }
       })
     );
@@ -1453,6 +1460,7 @@ async function handleProvinsiApi(request, url) {
     const gagal = perKabkota.filter((r) => !r.ok);
 
     return json({
+      triwulan,
       totalSampelTms, totalSampelMs, totalSampelDpb, totalSampelDpbSesuai,
       totalChecklistTerisi, maksChecklist: kabkotaList.length * 40,
       kabkotaSudahMulaiChecklist, jumlahKabkota: kabkotaList.length,

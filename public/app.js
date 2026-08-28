@@ -1609,37 +1609,66 @@ async function renderProvinsiRekap(root) {
   qs("#btn-refresh-prov", root).addEventListener("click", () => renderProvinsiRekap(root));
 }
 
-async function renderProvinsiUjiPetik(root) {
-  root.innerHTML = `<div class="empty-state">Memuat ringkasan Uji Petik seluruh Jawa Timur...</div>`;
+function currentTriwulan() {
+  const now = new Date();
+  const q = Math.floor(now.getMonth() / 3) + 1;
+  return `${now.getFullYear()}-Q${q}`;
+}
+
+function triwulanOptions(fromYear = 2025, fromQ = 1) {
+  const [curYear, curQ] = currentTriwulan().split("-Q").map(Number);
+  const list = [];
+  let y = fromYear, q = fromQ;
+  while (y < curYear || (y === curYear && q <= curQ)) {
+    list.push(`${y}-Q${q}`);
+    q++; if (q > 4) { q = 1; y++; }
+  }
+  return list.reverse(); // terbaru duluan
+}
+
+async function renderProvinsiUjiPetik(root, selectedTriwulan) {
+  const triwulan = selectedTriwulan || currentTriwulan();
+  root.innerHTML = `<div class="empty-state">Memuat ringkasan Uji Petik triwulan ${esc(triwulan)}...</div>`;
   let data;
   try {
-    data = await api("/api/provinsi/ringkasan-uji-petik");
+    data = await api(`/api/provinsi/ringkasan-uji-petik?triwulan=${encodeURIComponent(triwulan)}`);
   } catch (err) {
     root.innerHTML = `<div class="card"><p style="color:#c0392b">${esc(err.message)}</p></div>`;
     return;
   }
 
+  const options = triwulanOptions();
   root.innerHTML = `
     <div class="card">
-      <h2 style="font-size:20px">REKAP UJI PETIK PDPB</h2>
-      <p class="card-desc" style="margin-bottom:0">Bawaslu Provinsi Jawa Timur -- agregat langsung dari ${data.jumlahKabkota} kab/kota</p>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+        <div>
+          <h2 style="font-size:20px">REKAP UJI PETIK PDPB</h2>
+          <p class="card-desc" style="margin-bottom:0">Bawaslu Provinsi Jawa Timur -- agregat langsung dari ${data.jumlahKabkota} kab/kota</p>
+        </div>
+        <div class="field" style="max-width:200px">
+          <label>Triwulan</label>
+          <select id="prov-up-triwulan">
+            ${options.map((tw) => `<option value="${tw}" ${tw === triwulan ? "selected" : ""}>${tw}</option>`).join("")}
+          </select>
+        </div>
+      </div>
     </div>
     <div class="stat-grid">
       <div class="stat-box"><div class="num">${data.kabkotaSudahMulaiChecklist} / ${data.jumlahKabkota}</div><div class="label">Kab/Kota Sudah Isi Checklist</div></div>
       <div class="stat-box"><div class="num">${data.totalSampelTms.toLocaleString("id-ID")}</div><div class="label">Total Sampel TMS (A-DPB5)</div></div>
       <div class="stat-box"><div class="num">${data.totalSampelMs.toLocaleString("id-ID")}</div><div class="label">Total Sampel Pemilih Baru (A-DPB7)</div></div>
       <div class="stat-box"><div class="num">${data.totalSampelDpb.toLocaleString("id-ID")}</div><div class="label">Total Sampel DPB (A-DPB8)</div></div>
-      <div class="stat-box"><div class="num">${data.totalHasilAkhir.toLocaleString("id-ID")}</div><div class="label">Total Hasil Akhir (triwulan terakhir tiap daerah)</div></div>
+      <div class="stat-box"><div class="num">${data.totalHasilAkhir.toLocaleString("id-ID")}</div><div class="label">Total Hasil Akhir Triwulan ${esc(triwulan)}</div></div>
     </div>
     ${data.gagal.length ? `
     <div class="card" style="border-color:var(--danger)">
       <p style="color:var(--danger);font-size:12.5px;margin:0">Gagal memuat data dari ${data.gagal.length} kab/kota: ${data.gagal.map((g) => esc(g.nama)).join(", ")}</p>
     </div>` : ""}
     <div class="card">
-      <h2>Rincian per Kabupaten/Kota</h2>
-      <p class="card-desc">Diurutkan dari total sampel terbanyak. "Triwulan" menunjukkan triwulan terakhir yang sudah diisi daerah tersebut (bisa berbeda antar daerah).</p>
+      <h2>Rincian per Kabupaten/Kota -- Triwulan ${esc(triwulan)}</h2>
+      <p class="card-desc">Diurutkan dari total sampel terbanyak di triwulan ini. Sampel TMS/Baru/DPB dihitung dari 3 bulan yang termasuk triwulan ini.</p>
       <div class="table-scroll"><table>
-        <thead><tr><th>Kabupaten/Kota</th><th>Checklist Terisi</th><th>Sampel TMS</th><th>Sampel Baru</th><th>Sampel DPB</th><th>Triwulan Terakhir</th><th>Hasil Akhir (L/P)</th></tr></thead>
+        <thead><tr><th>Kabupaten/Kota</th><th>Checklist Terisi</th><th>Sampel TMS</th><th>Sampel Baru</th><th>Sampel DPB</th><th>Rekap Triwulan?</th><th>Hasil Akhir (L/P)</th></tr></thead>
         <tbody>${data.perKabkota.map((k) => `
           <tr>
             <td>${esc(k.nama)}</td>
@@ -1647,7 +1676,7 @@ async function renderProvinsiUjiPetik(root) {
             <td>${k.sampelTms}</td>
             <td>${k.sampelMs}</td>
             <td>${k.sampelDpb} (${k.sampelDpbSesuai} sesuai)</td>
-            <td>${esc(k.triwulanTerakhir || "-")}</td>
+            <td>${k.adaRekapTriwulan ? "Sudah" : "Belum"}</td>
             <td>${k.hasilLaki} / ${k.hasilPerempuan}</td>
           </tr>`).join("")}</tbody>
       </table></div>
@@ -1656,7 +1685,8 @@ async function renderProvinsiUjiPetik(root) {
       <button class="btn" id="btn-refresh-prov-up">Muat Ulang</button>
     </div>
   `;
-  qs("#btn-refresh-prov-up", root).addEventListener("click", () => renderProvinsiUjiPetik(root));
+  qs("#prov-up-triwulan", root).addEventListener("change", (e) => renderProvinsiUjiPetik(root, e.target.value));
+  qs("#btn-refresh-prov-up", root).addEventListener("click", () => renderProvinsiUjiPetik(root, triwulan));
 }
 
 // ---------- Routing table ----------
