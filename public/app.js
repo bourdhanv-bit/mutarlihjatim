@@ -285,6 +285,89 @@ async function populateTpsDropdown(selectEl, kecamatan, kelurahan) {
   }
 }
 
+// ---------- Peta Leaflet (choropleth) ----------
+// File GeoJSON sudah disederhanakan & dipecah per kabkota (public/geojson/<kode>.geojson) supaya
+// ringan -- 1 file provinsi (public/geojson/jatim-kabkota.geojson, 38 batas kab/kota) dipakai di
+// dashboard provinsi, dan 1 file per kabkota (cuma kecamatan daerah itu) dipakai di Infografis
+// kab/kota. Tidak pernah load file asli 56MB di browser.
+const geojsonCache = new Map();
+async function loadGeojson(url) {
+  if (geojsonCache.has(url)) return geojsonCache.get(url);
+  const res = await fetch(url);
+  const data = await res.json();
+  geojsonCache.set(url, data);
+  return data;
+}
+
+function colorScale(value, max) {
+  if (!max || max <= 0) return "#e7ecf5";
+  const ratio = Math.min(1, value / max);
+  const from = [231, 236, 245];
+  const to = [232, 130, 60];
+  const rgb = from.map((c, i) => Math.round(c + (to[i] - c) * ratio));
+  return `rgb(${rgb.join(",")})`;
+}
+
+// dataByName: { [namaProperti]: { value, laki, perempuan, ...apapun lain untuk popup } }
+// nameProp: field geojson dipakai untuk MATCHING ke key dataByName. displayProp (opsional):
+// field lain dipakai untuk judul di popup kalau beda dari nameProp (mis. provinsi pakai "kode"
+// untuk matching tapi "kab_kota" untuk ditampilkan).
+async function renderChoroplethMap(containerId, geojsonUrl, dataByName, { nameProp, displayProp, onFeatureClick, buttonLabel }) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  el.innerHTML = `<div class="empty-state">Memuat peta...</div>`;
+
+  let geojson;
+  try {
+    geojson = await loadGeojson(geojsonUrl);
+  } catch {
+    el.innerHTML = `<div class="empty-state">Peta tidak tersedia untuk daerah ini.</div>`;
+    return;
+  }
+
+  el.innerHTML = "";
+  el.classList.add("map-container");
+  const map = L.map(el, { scrollWheelZoom: false }).setView([-7.9, 112.6], 8);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "&copy; OpenStreetMap contributors",
+    maxZoom: 14,
+  }).addTo(map);
+
+  const values = Object.values(dataByName).map((d) => d.value || 0);
+  const maxVal = values.length ? Math.max(...values) : 0;
+
+  const findData = (matchKey) => {
+    const key = Object.keys(dataByName).find((k) => k.toLowerCase().trim() === (matchKey || "").toLowerCase().trim());
+    return key ? dataByName[key] : null;
+  };
+
+  const layer = L.geoJSON(geojson, {
+    style: (feature) => {
+      const d = findData(feature.properties[nameProp]);
+      return { fillColor: d ? colorScale(d.value, maxVal) : "#e7ecf5", weight: 1, color: "#1e3563", fillOpacity: 0.75 };
+    },
+    onEachFeature: (feature, lyr) => {
+      const matchKey = feature.properties[nameProp];
+      const displayNama = displayProp ? feature.properties[displayProp] : matchKey;
+      const d = findData(matchKey);
+      const popupId = `map-popup-${String(matchKey).replace(/[^a-zA-Z0-9]/g, "")}-${containerId}`;
+      lyr.bindPopup(`
+        <b>${esc(displayNama)}</b><br/>
+        ${d ? `Laki-laki: <b>${(d.laki || 0).toLocaleString("id-ID")}</b><br/>Perempuan: <b>${(d.perempuan || 0).toLocaleString("id-ID")}</b><br/>Total: <b>${(d.value || 0).toLocaleString("id-ID")}</b>` : "Belum ada data"}
+        ${onFeatureClick ? `<br/><button id="${popupId}" style="margin-top:6px;background:#e8823c;color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:12px;cursor:pointer">${esc(buttonLabel || "Lihat Detail")}</button>` : ""}
+      `);
+      if (onFeatureClick) {
+        lyr.on("popupopen", () => {
+          const btn = document.getElementById(popupId);
+          if (btn) btn.addEventListener("click", () => onFeatureClick(matchKey, d));
+        });
+      }
+    },
+  }).addTo(map);
+
+  try { map.fitBounds(layer.getBounds(), { padding: [10, 10] }); } catch {}
+}
+
 async function renderPemilihCari(root) {
   root.innerHTML = `
     <div class="card">
@@ -585,6 +668,11 @@ async function renderPemilihStatistik(root) {
         `).join("")}
       </div>
       <div class="card">
+        <h2>Peta Sebaran Pemilih per Kecamatan</h2>
+        <p class="card-desc">Klik kecamatan di peta untuk lihat infografis lengkap kecamatan tersebut.</p>
+        <div id="map-kabupaten-pemilih"></div>
+      </div>
+      <div class="card">
         <h2>Jumlah Pemilih per Kecamatan</h2>
         <p class="card-desc">Klik kecamatan untuk lihat infografis lengkap kecamatan tersebut.</p>
         ${dataToShow.perKecamatan.length === 0 ? `<div class="empty-state">Belum ada data.</div>` : `
@@ -596,6 +684,20 @@ async function renderPemilihStatistik(root) {
         `).join("")}</div>`}
       </div>
     `;
+
+    if (dataToShow.perKecamatan.length > 0) {
+      const dataByName = {};
+      for (const k of dataToShow.perKecamatan) dataByName[k.kecamatan] = { value: k.jumlah, laki: k.laki, perempuan: k.perempuan };
+      renderChoroplethMap(
+        "map-kabupaten-pemilih",
+        `/geojson/${state.user.kabkota}.geojson`,
+        dataByName,
+        { nameProp: "kecamatan", onFeatureClick: (nama) => renderKecamatanLevel(nama), buttonLabel: "Lihat Infografis Lengkap" }
+      );
+    } else {
+      qs("#map-kabupaten-pemilih", body).innerHTML = `<div class="empty-state">Belum ada data untuk ditampilkan di peta.</div>`;
+    }
+
     qsa(".kec-drill", body).forEach((box) => {
       box.addEventListener("click", () => renderKecamatanLevel(box.dataset.kec));
     });
@@ -1265,22 +1367,92 @@ async function renderUpSampelDpb(root) {
 }
 
 async function renderUpInfografis(root) {
-  const data = await api("/api/uji-petik/infografis/kabupaten");
-  root.innerHTML = `
-    <div class="stat-grid">
-      <div class="stat-box"><div class="num">${data.desaDiujiPetik}</div><div class="label">Desa Diuji Petik</div></div>
-      <div class="stat-box"><div class="num">${data.totalMsDiujiPetik}</div><div class="label">Total Sampel MS</div></div>
-      <div class="stat-box"><div class="num">${data.totalTmsDiujiPetik}</div><div class="label">Total Sampel TMS</div></div>
-    </div>
-    <div class="card">
-      <h2>Hasil Akhir per Kecamatan (Triwulan Terakhir: ${esc(data.triwulan || "-")})</h2>
-      ${data.perKecamatan.length === 0 ? `<div class="empty-state">Belum ada data rekap triwulan.</div>` : `
-      <div class="table-scroll"><table>
-        <thead><tr><th>Kecamatan</th><th>Laki-laki</th><th>Perempuan</th><th>Total</th></tr></thead>
-        <tbody>${data.perKecamatan.map((r) => `<tr><td>${esc(r.kecamatan)}</td><td>${r.laki}</td><td>${r.perempuan}</td><td>${r.total}</td></tr>`).join("")}</tbody>
-      </table></div>`}
-    </div>
-  `;
+  async function renderKabupatenLevel() {
+    const data = await api("/api/uji-petik/infografis/kabupaten");
+    root.innerHTML = `
+      <div class="stat-grid">
+        <div class="stat-box"><div class="num">${data.desaDiujiPetik}</div><div class="label">Desa Diuji Petik</div></div>
+        <div class="stat-box"><div class="num">${data.totalMsDiujiPetik}</div><div class="label">Total Sampel MS</div></div>
+        <div class="stat-box"><div class="num">${data.totalTmsDiujiPetik}</div><div class="label">Total Sampel TMS</div></div>
+      </div>
+      <div class="card">
+        <h2>Peta Hasil Akhir per Kecamatan (Triwulan Terakhir: ${esc(data.triwulan || "-")})</h2>
+        <p class="card-desc">Klik kecamatan di peta untuk lihat detail uji petik kecamatan tersebut.</p>
+        <div id="map-kabupaten-ujipetik"></div>
+      </div>
+      <div class="card">
+        <h2>Hasil Akhir per Kecamatan (Triwulan Terakhir: ${esc(data.triwulan || "-")})</h2>
+        ${data.perKecamatan.length === 0 ? `<div class="empty-state">Belum ada data rekap triwulan.</div>` : `
+        <div class="table-scroll"><table>
+          <thead><tr><th>Kecamatan</th><th>Laki-laki</th><th>Perempuan</th><th>Total</th></tr></thead>
+          <tbody>${data.perKecamatan.map((r) => `<tr><td>${esc(r.kecamatan)}</td><td>${r.laki}</td><td>${r.perempuan}</td><td>${r.total}</td></tr>`).join("")}</tbody>
+        </table></div>`}
+      </div>
+    `;
+
+    if (data.perKecamatan.length > 0) {
+      const dataByName = {};
+      for (const k of data.perKecamatan) dataByName[k.kecamatan] = { value: k.total, laki: k.laki, perempuan: k.perempuan };
+      renderChoroplethMap(
+        "map-kabupaten-ujipetik",
+        `/geojson/${state.user.kabkota}.geojson`,
+        dataByName,
+        { nameProp: "kecamatan", onFeatureClick: (nama) => renderKecamatanLevel(nama), buttonLabel: "Lihat Detail Uji Petik" }
+      );
+    } else {
+      qs("#map-kabupaten-ujipetik", root).innerHTML = `<div class="empty-state">Belum ada data untuk ditampilkan di peta.</div>`;
+    }
+  }
+
+  async function renderKecamatanLevel(kecamatan) {
+    root.innerHTML = `<div class="empty-state">Memuat detail ${esc(kecamatan)}...</div>`;
+    const d = await api(`/api/uji-petik/infografis/kecamatan?nama=${encodeURIComponent(kecamatan)}`);
+    root.innerHTML = `
+      <div class="card">
+        <button class="btn btn-sm" id="btn-back-up-kab" style="margin-bottom:12px">&larr; Kembali ke Kabupaten/Kota</button>
+        <h2 style="font-size:18px">UJI PETIK KECAMATAN ${esc(kecamatan.toUpperCase())}</h2>
+        <p class="card-desc" style="margin-bottom:0">Triwulan terakhir: ${esc(d.triwulan || "-")} -- Hasil Akhir: ${d.laki} L / ${d.perempuan} P (${d.total} total)</p>
+      </div>
+      <div class="stat-grid">
+        <div class="stat-box"><div class="num">${d.desaDiujiPetik}</div><div class="label">Desa Diuji Petik</div></div>
+        <div class="stat-box"><div class="num">${d.totalMsDiujiPetik}</div><div class="label">Sampel MS</div></div>
+        <div class="stat-box"><div class="num">${d.totalTmsDiujiPetik}</div><div class="label">Sampel TMS</div></div>
+      </div>
+      <div class="card">
+        <h2>Sebaran Sampel TMS per Kategori</h2>
+        ${d.kategoriTms.every((k) => k.jumlah === 0) ? `<div class="empty-state">Belum ada data.</div>` : d.kategoriTms.filter((k) => k.jumlah > 0).map((k) => `
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;font-size:12.5px">
+            <span style="width:180px">${esc(k.label)}</span>
+            <div style="flex:1;background:var(--navy-100);border-radius:4px;height:14px;overflow:hidden">
+              <div style="width:${Math.min(100, (k.jumlah / (d.totalTmsDiujiPetik || 1)) * 100)}%;background:var(--danger);height:100%"></div>
+            </div>
+            <span style="width:50px;text-align:right;font-weight:600">${k.jumlah}</span>
+          </div>
+        `).join("")}
+      </div>
+      <div class="card">
+        <h2>Sebaran Sampel Pemilih Baru per Kategori</h2>
+        ${d.kategoriMs.every((k) => k.jumlah === 0) ? `<div class="empty-state">Belum ada data.</div>` : d.kategoriMs.filter((k) => k.jumlah > 0).map((k) => `
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;font-size:12.5px">
+            <span style="width:180px">${esc(k.label)}</span>
+            <div style="flex:1;background:var(--navy-100);border-radius:4px;height:14px;overflow:hidden">
+              <div style="width:${Math.min(100, (k.jumlah / (d.totalMsDiujiPetik || 1)) * 100)}%;background:var(--orange-500);height:100%"></div>
+            </div>
+            <span style="width:50px;text-align:right;font-weight:600">${k.jumlah}</span>
+          </div>
+        `).join("")}
+      </div>
+      <div class="card">
+        <h2>Perbandingan Antar Triwulan</h2>
+        ${d.triwulanComparison.length === 0 ? `<div class="empty-state">Belum ada data.</div>` : `
+        <div class="table-scroll"><table><thead><tr><th>Triwulan</th><th>Laki-laki</th><th>Perempuan</th><th>Total</th></tr></thead>
+        <tbody>${d.triwulanComparison.map((t) => `<tr><td>${esc(t.triwulan)}</td><td>${t.laki}</td><td>${t.perempuan}</td><td>${t.total}</td></tr>`).join("")}</tbody></table></div>`}
+      </div>
+    `;
+    qs("#btn-back-up-kab", root).addEventListener("click", renderKabupatenLevel);
+  }
+
+  await renderKabupatenLevel();
 }
 
 // ================= MODUL PROVINSI =================
@@ -1312,6 +1484,11 @@ async function renderProvinsiRekap(root) {
       <p style="color:var(--danger);font-size:12.5px;margin:0">Gagal memuat data dari ${data.gagal.length} kab/kota: ${data.gagal.map((g) => esc(g.nama)).join(", ")}</p>
     </div>` : ""}
     <div class="card">
+      <h2>Peta Sebaran Pemilih per Kabupaten/Kota</h2>
+      <p class="card-desc">Klik kab/kota di peta untuk lihat ringkasannya.</p>
+      <div id="map-provinsi-pemilih"></div>
+    </div>
+    <div class="card">
       <h2>Sebaran Pemilih per Kabupaten/Kota</h2>
       <p class="card-desc">Diurutkan dari jumlah pemilih terbanyak. Kab/kota yang belum mulai input akan tampil 0.</p>
       <div class="table-scroll"><table>
@@ -1330,6 +1507,10 @@ async function renderProvinsiRekap(root) {
       <button class="btn" id="btn-refresh-prov">Muat Ulang</button>
     </div>
   `;
+  const dataByKode = {};
+  for (const k of data.perKabkota) dataByKode[k.kode] = { value: k.laki + k.perempuan, laki: k.laki, perempuan: k.perempuan };
+  renderChoroplethMap("map-provinsi-pemilih", "/geojson/jatim-kabkota.geojson", dataByKode, { nameProp: "kode", displayProp: "kab_kota" });
+
   qs("#btn-refresh-prov", root).addEventListener("click", () => renderProvinsiRekap(root));
 }
 
