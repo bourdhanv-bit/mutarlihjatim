@@ -143,7 +143,9 @@ body {
   font-size: 13px;
 }
 
-.topbar-title { font-weight: 600; font-size: 15px; }
+.topbar-titles { display: flex; flex-direction: column; line-height: 1.25; }
+.topbar-title { font-weight: 700; font-size: 15px; letter-spacing: 0.3px; }
+.topbar-subtitle { font-size: 11.5px; color: rgba(255,255,255,0.6); }
 
 .topbar-right { display: flex; align-items: center; gap: 14px; font-size: 13px; }
 

@@ -79,35 +79,55 @@ qs("#logout-btn").addEventListener("click", async () => {
 });
 
 // ---------- Navigasi 2 level: sidebar kiri (modul) + menu atas (tab dalam modul) ----------
+// Label & urutan tab meniru persis 2 aplikasi lama (AWASI MUTARLIH & Uji Petik) supaya
+// tampilan familiar bagi petugas yang sudah terbiasa pakai versi Malang.
+function formatKabkota(kode) {
+  if (!kode) return "";
+  const [jenis, ...rest] = kode.split("-");
+  const jenisLabel = jenis === "kota" ? "Kota" : "Kabupaten";
+  const nama = rest.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+  return `${jenisLabel} ${nama}`;
+}
+
 const MODULES = {
   admin_kabkota: [
     {
       key: "pemilih",
-      label: "Pemutakhiran Data Pemilih",
+      sidebarLabel: "Pemutakhiran Data Pemilih",
+      logo: "AM",
+      title: "AWASI MUTARLIH",
+      subtitle: () => `Bawaslu ${formatKabkota(state.user.kabkota)}`,
       tabs: [
-        { key: "pemilih-cari", label: "Data Pemilih" },
-        { key: "pemilih-input", label: "Input Pemilih Baru" },
-        { key: "pemilih-statistik", label: "Statistik" },
+        { key: "pemilih-cari", label: "Data" },
         { key: "pemilih-tms", label: "Data TMS" },
+        { key: "pemilih-input", label: "Input Pemilih Baru" },
+        { key: "pemilih-ms", label: "Pemilih MS" },
+        { key: "pemilih-statistik", label: "Infografis" },
       ],
     },
     {
       key: "uji-petik",
-      label: "Uji Petik PDPB",
+      sidebarLabel: "Uji Petik PDPB",
+      logo: "UP",
+      title: "UJI PETIK",
+      subtitle: () => `Bawaslu ${formatKabkota(state.user.kabkota)}`,
       tabs: [
-        { key: "up-checklist", label: "Checklist A-DPB1" },
-        { key: "up-rekap", label: "Rekap Triwulan A-DPB2" },
-        { key: "up-sampel-tms", label: "Sampel TMS" },
-        { key: "up-sampel-ms", label: "Sampel Pemilih Baru" },
-        { key: "up-sampel-dpb", label: "Sampel DPB" },
-        { key: "up-infografis", label: "Infografis" },
+        { key: "up-checklist", label: "1. Checklist Prosedur (A-DPB1)" },
+        { key: "up-rekap", label: "2. Rekap Triwulan (A-DPB2/A-DPB3)" },
+        { key: "up-sampel-tms", label: "3. Sampel TMS (A-DPB5/A-DPB4)" },
+        { key: "up-sampel-ms", label: "4. Sampel Pemilih Baru (A-DPB7/A-DPB6)" },
+        { key: "up-sampel-dpb", label: "5. Sampel DPB (A-DPB8)" },
+        { key: "up-infografis", label: "6. Infografis" },
       ],
     },
   ],
   admin_provinsi: [
     {
       key: "provinsi",
-      label: "Rekap Provinsi",
+      sidebarLabel: "Rekap Provinsi",
+      logo: "RP",
+      title: "REKAP PROVINSI",
+      subtitle: () => "Bawaslu Provinsi Jawa Timur",
       tabs: [{ key: "provinsi-rekap", label: "Rekap Provinsi" }],
     },
   ],
@@ -116,7 +136,7 @@ const MODULES = {
 function renderSidebar() {
   const modules = MODULES[state.user.role] || [];
   qs("#sidebar").innerHTML = modules
-    .map((m) => `<button data-module="${m.key}">${esc(m.label)}</button>`)
+    .map((m) => `<button data-module="${m.key}">${esc(m.sidebarLabel)}</button>`)
     .join("");
   qsa("#sidebar button").forEach((btn) => {
     btn.addEventListener("click", () => goToModule(btn.dataset.module));
@@ -128,13 +148,19 @@ function goToModule(moduleKey) {
   qsa("#sidebar button").forEach((b) => b.classList.toggle("active", b.dataset.module === moduleKey));
 
   const module = (MODULES[state.user.role] || []).find((m) => m.key === moduleKey);
-  const navEl = qs("#main-nav");
+  if (!module) return;
 
-  if (!module || module.tabs.length <= 1) {
-    // Modul dengan 1 tab saja (mis. Rekap Provinsi) -- tidak perlu baris menu atas terpisah.
+  // Ganti branding topbar (logo/judul/subjudul) sesuai modul aktif, meniru identitas
+  // visual aplikasi asalnya (AM = AWASI MUTARLIH, UP = Uji Petik).
+  qs("#topbar-logo").textContent = module.logo;
+  qs("#topbar-title").textContent = module.title;
+  qs("#topbar-subtitle").textContent = module.subtitle();
+
+  const navEl = qs("#main-nav");
+  if (module.tabs.length <= 1) {
     navEl.innerHTML = "";
     navEl.classList.add("hidden");
-    if (module) goToSection(module.tabs[0].key);
+    goToSection(module.tabs[0].key);
     return;
   }
 
@@ -326,6 +352,45 @@ async function renderPemilihTms(root) {
   `;
 }
 
+async function renderPemilihMs(root) {
+  root.innerHTML = `
+    <div class="card">
+      <h2>Pemilih MS (Memenuhi Syarat)</h2>
+      <p class="card-desc">Daftar pemilih yang masih memenuhi syarat (belum ditandai TMS) di 1 kecamatan.</p>
+      <div class="field-row">
+        <div class="field"><label>Kecamatan *</label><input id="ms-kecamatan" /></div>
+        <div class="field"><label>Kelurahan (opsional)</label><input id="ms-kelurahan" /></div>
+        <div class="field"><label>TPS (opsional)</label><input id="ms-tps" /></div>
+        <div class="field" style="align-self:flex-end"><button class="btn btn-orange" id="btn-load-ms">Muat</button></div>
+      </div>
+      <div id="ms-hasil"></div>
+    </div>
+  `;
+  qs("#btn-load-ms", root).addEventListener("click", async () => {
+    const kecamatan = qs("#ms-kecamatan", root).value.trim();
+    if (!kecamatan) return toast("Kecamatan wajib diisi", true);
+    const params = new URLSearchParams({ kecamatan });
+    const kel = qs("#ms-kelurahan", root).value.trim();
+    const tps = qs("#ms-tps", root).value.trim();
+    if (kel) params.set("kelurahan", kel);
+    if (tps) params.set("tps", tps);
+
+    const hasilEl = qs("#ms-hasil", root);
+    hasilEl.innerHTML = `<div class="empty-state">Memuat...</div>`;
+    try {
+      const data = await api(`/api/pemilih/pemilih-ms?${params.toString()}`);
+      if (data.data.length === 0) { hasilEl.innerHTML = `<div class="empty-state">Tidak ada data.</div>`; return; }
+      hasilEl.innerHTML = `
+        <p style="font-size:12.5px;color:var(--muted)">Total: ${data.total} (halaman ${data.page})</p>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Nama</th><th>NIK</th><th>Kelurahan</th><th>TPS</th><th>Kelamin</th></tr></thead>
+          <tbody>${data.data.map((r) => `<tr><td>${esc(r.nama)}</td><td>${esc(r.nik)}</td><td>${esc(r.kelurahan)}</td><td>${esc(r.tps)}</td><td>${esc(r.kelamin)}</td></tr>`).join("")}</tbody>
+        </table></div>
+      `;
+    } catch (err) { hasilEl.innerHTML = `<p style="color:#c0392b">${esc(err.message)}</p>`; }
+  });
+}
+
 // ================= MODUL UJI PETIK =================
 
 async function renderUpChecklist(root) {
@@ -394,6 +459,24 @@ async function renderUpRekap(root) {
       <p class="card-desc">Untuk uji fungsional cepat, form ini cukup PDPB Awal saja (kategori TMS/Baru default 0, bisa dikembangkan di frontend selanjutnya).</p>
       <button class="btn btn-orange" id="btn-save-rekap">Simpan</button>
     </div>
+    <div class="card">
+      <h2>Masukan &amp; Tanggapan Pleno (A-DPB3)</h2>
+      <div class="field-row">
+        <div class="field"><label>Triwulan</label><input id="mk-tw" placeholder="2026-Q1" /></div>
+        <div class="field" style="align-self:flex-end"><button class="btn" id="btn-load-masukan">Muat</button></div>
+      </div>
+      <div id="masukan-body"></div>
+      <hr style="border:none;border-top:1px solid var(--border);margin:16px 0" />
+      <div class="field-row">
+        <div class="field"><label>Nama Instansi *</label><input id="mk-instansi" /></div>
+        <div class="field" style="flex:2"><label>Masukan/Tanggapan</label><input id="mk-masukan" /></div>
+      </div>
+      <div class="field-row">
+        <div class="field" style="flex:2"><label>Tindak Lanjut</label><input id="mk-tindak" /></div>
+        <div class="field"><label>Keterangan</label><input id="mk-ket" /></div>
+      </div>
+      <button class="btn btn-orange" id="btn-add-masukan">Tambah</button>
+    </div>
   `;
   qs("#btn-load-rekap", root).addEventListener("click", async () => {
     const tw = qs("#up-rk-tw", root).value.trim();
@@ -434,6 +517,56 @@ async function renderUpRekap(root) {
         }),
       });
       toast("Rekap tersimpan");
+    } catch (err) { toast(err.message, true); }
+  });
+
+  async function loadMasukan() {
+    const tw = qs("#mk-tw", root).value.trim();
+    if (!tw) return toast("Isi triwulan dulu", true);
+    const data = await api(`/api/uji-petik/rekap-triwulan/masukan?triwulan=${encodeURIComponent(tw)}`);
+    const body = qs("#masukan-body", root);
+    if (data.data.length === 0) { body.innerHTML = `<div class="empty-state">Belum ada masukan/tanggapan pleno.</div>`; return; }
+    body.innerHTML = `
+      <div class="table-scroll"><table>
+        <thead><tr><th>Instansi</th><th>Masukan/Tanggapan</th><th>Tindak Lanjut</th><th>Keterangan</th><th></th></tr></thead>
+        <tbody>${data.data.map((r) => `
+          <tr>
+            <td>${esc(r.nama_instansi)}</td><td>${esc(r.masukan_tanggapan)}</td>
+            <td>${esc(r.tindak_lanjut)}</td><td>${esc(r.keterangan)}</td>
+            <td><button class="btn btn-sm btn-danger" data-id="${r.id}">Hapus</button></td>
+          </tr>`).join("")}</tbody>
+      </table></div>
+    `;
+    qsa("button[data-id]", body).forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await api(`/api/uji-petik/rekap-triwulan/masukan?id=${btn.dataset.id}`, { method: "DELETE" });
+          toast("Dihapus"); loadMasukan();
+        } catch (err) { toast(err.message, true); }
+      });
+    });
+  }
+  qs("#btn-load-masukan", root).addEventListener("click", loadMasukan);
+  qs("#btn-add-masukan", root).addEventListener("click", async () => {
+    const triwulan = qs("#mk-tw", root).value.trim();
+    const nama_instansi = qs("#mk-instansi", root).value.trim();
+    if (!triwulan || !nama_instansi) return toast("Triwulan dan nama instansi wajib diisi", true);
+    try {
+      await api("/api/uji-petik/rekap-triwulan/masukan", {
+        method: "POST",
+        body: JSON.stringify({
+          triwulan, nama_instansi,
+          masukan_tanggapan: qs("#mk-masukan", root).value.trim(),
+          tindak_lanjut: qs("#mk-tindak", root).value.trim(),
+          keterangan: qs("#mk-ket", root).value.trim(),
+        }),
+      });
+      toast("Masukan ditambahkan");
+      qs("#mk-instansi", root).value = "";
+      qs("#mk-masukan", root).value = "";
+      qs("#mk-tindak", root).value = "";
+      qs("#mk-ket", root).value = "";
+      loadMasukan();
     } catch (err) { toast(err.message, true); }
   });
 }
@@ -630,6 +763,7 @@ const SECTION_RENDERERS = {
   "pemilih-input": renderPemilihInput,
   "pemilih-statistik": renderPemilihStatistik,
   "pemilih-tms": renderPemilihTms,
+  "pemilih-ms": renderPemilihMs,
   "up-checklist": renderUpChecklist,
   "up-rekap": renderUpRekap,
   "up-sampel-tms": renderSampelSection("tms"),
