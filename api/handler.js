@@ -5,7 +5,7 @@ export const config = { runtime: "edge" };
 
 import { verifyPassword, createSessionToken, verifySessionToken } from "../lib/auth.js";
 import { getCentralDb, resolveKabkotaDb, dbAll, dbFirst, dbRun } from "../lib/db.js";
-import { TMS_LABELS, DISABILITAS_LABELS } from "../lib/labels.js";
+import { TMS_LABELS, DISABILITAS_LABELS, TMS_KATEGORI, MS_KATEGORI, TMS_CATS, BARU_CATS } from "../lib/labels.js";
 
 const PAGE_SIZE = 50;
 const MAX_BULK_NIK = 100; // dibatasi lebih ketat karena pencarian LIKE per-NIK men-scan seluruh tabel tiap token
@@ -810,11 +810,497 @@ async function handlePemilihApi(request, url, db, user) {
   return json({ error: "Endpoint modul pemilih belum dipindahkan: " + path }, 501);
 }
 
-// ============== MODUL UJI PETIK (skeleton, sama seperti versi Cloudflare) ==============
+// ============== MODUL UJI PETIK ==============
+//
+// CATATAN PENYEDERHANAAN: kode asli Malang memvalidasi kecamatan terhadap daftar 33 nama yang
+// di-hardcode. Karena tiap kabkota di sistem baru punya daftar kecamatan sendiri-sendiri (belum
+// ada master data kecamatan per kabkota yang terisi), validasi itu dilepas -- kecamatan diterima
+// dinamis apa adanya dari yang diinput. Grid rekap triwulan juga tidak lagi selalu menampilkan
+// SEMUA kecamatan resmi (karena tidak ada daftar tetapnya), melainkan kecamatan yang sudah pernah
+// diisi datanya di triwulan berjalan atau triwulan sebelumnya (untuk carry-forward).
+
+const REKAP_TW_FIELDS = [
+  "pdpb_awal_laki", "pdpb_awal_perempuan",
+  ...TMS_CATS.flatMap((c) => [`tms_${c}_laki`, `tms_${c}_perempuan`]),
+  ...BARU_CATS.flatMap((c) => [`baru_${c}_laki`, `baru_${c}_perempuan`]),
+];
+
+function withTotals(row) {
+  const awalLaki = row.pdpb_awal_laki || 0;
+  const awalPerempuan = row.pdpb_awal_perempuan || 0;
+
+  let tmsLaki = 0, tmsPerempuan = 0;
+  for (const c of TMS_CATS) { tmsLaki += row[`tms_${c}_laki`] || 0; tmsPerempuan += row[`tms_${c}_perempuan`] || 0; }
+
+  let baruLaki = 0, baruPerempuan = 0;
+  for (const c of BARU_CATS) { baruLaki += row[`baru_${c}_laki`] || 0; baruPerempuan += row[`baru_${c}_perempuan`] || 0; }
+
+  const hasilLaki = awalLaki - tmsLaki + baruLaki;
+  const hasilPerempuan = awalPerempuan - tmsPerempuan + baruPerempuan;
+
+  return {
+    ...row,
+    pdpb_awal_total: awalLaki + awalPerempuan,
+    tms_laki_total: tmsLaki, tms_perempuan_total: tmsPerempuan, tms_total: tmsLaki + tmsPerempuan,
+    baru_laki_total: baruLaki, baru_perempuan_total: baruPerempuan, baru_total: baruLaki + baruPerempuan,
+    hasil_laki: hasilLaki, hasil_perempuan: hasilPerempuan, hasil_total: hasilLaki + hasilPerempuan,
+  };
+}
+
+function previousTriwulan(tw) {
+  const [yearStr, qStr] = tw.split("-Q");
+  let year = Number(yearStr);
+  let q = Number(qStr) - 1;
+  if (q < 1) { q = 4; year -= 1; }
+  return `${year}-Q${q}`;
+}
+
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+function isSimilarDesaName(a, b) {
+  if (a === b) return true;
+  const threshold = Math.max(1, Math.floor(Math.max(a.length, b.length) * 0.25));
+  return levenshtein(a, b) <= threshold;
+}
+
+async function latestTriwulan(db) {
+  const row = await dbFirst(db, "SELECT triwulan FROM rekap_triwulan ORDER BY triwulan DESC LIMIT 1");
+  return row ? row.triwulan : null;
+}
+
+// L/P per kecamatan pada triwulan tertentu -- dinamis dari data yang ada, bukan daftar tetap.
+async function perKecamatanHasilAkhir(db, triwulan) {
+  if (!triwulan) return [];
+  const results = await dbAll(db, "SELECT * FROM rekap_triwulan WHERE triwulan = ?", [triwulan]);
+  return results.map((row) => {
+    const t = withTotals(row);
+    return { kecamatan: row.kecamatan, laki: t.hasil_laki, perempuan: t.hasil_perempuan, total: t.hasil_total };
+  });
+}
+
+async function monthlyMsTms(db, kecamatanFilter) {
+  const tmsResult = kecamatanFilter
+    ? await dbAll(db, "SELECT periode, COUNT(*) as jumlah FROM sampel_tms WHERE kecamatan = ? GROUP BY periode", [kecamatanFilter])
+    : await dbAll(db, "SELECT periode, COUNT(*) as jumlah FROM sampel_tms GROUP BY periode");
+  const msResult = kecamatanFilter
+    ? await dbAll(db, "SELECT periode, COUNT(*) as jumlah FROM sampel_ms WHERE kecamatan = ? GROUP BY periode", [kecamatanFilter])
+    : await dbAll(db, "SELECT periode, COUNT(*) as jumlah FROM sampel_ms GROUP BY periode");
+
+  const byPeriode = {};
+  for (const r of tmsResult) { byPeriode[r.periode] = byPeriode[r.periode] || { periode: r.periode, ms: 0, tms: 0 }; byPeriode[r.periode].tms = r.jumlah; }
+  for (const r of msResult) { byPeriode[r.periode] = byPeriode[r.periode] || { periode: r.periode, ms: 0, tms: 0 }; byPeriode[r.periode].ms = r.jumlah; }
+  return Object.values(byPeriode).sort((a, b) => a.periode.localeCompare(b.periode));
+}
+
+async function desaDiujiPetikCount(db, kecamatanFilter) {
+  const where = kecamatanFilter ? "WHERE kecamatan = ? AND kelurahan IS NOT NULL AND TRIM(kelurahan) != ''" : "WHERE kelurahan IS NOT NULL AND TRIM(kelurahan) != ''";
+  const bindArgs = kecamatanFilter ? [kecamatanFilter, kecamatanFilter, kecamatanFilter] : [];
+  const sql = `
+    SELECT DISTINCT kecamatan, UPPER(TRIM(kelurahan)) as kelurahan FROM (
+      SELECT kecamatan, kelurahan FROM sampel_tms ${where}
+      UNION
+      SELECT kecamatan, kelurahan FROM sampel_ms ${where}
+      UNION
+      SELECT kecamatan, kelurahan FROM sampel_dpb ${where}
+    )`;
+  const results = await dbAll(db, sql, bindArgs);
+
+  const byKecamatan = {};
+  for (const row of results) {
+    if (!byKecamatan[row.kecamatan]) byKecamatan[row.kecamatan] = [];
+    byKecamatan[row.kecamatan].push(row.kelurahan);
+  }
+
+  let total = 0;
+  for (const kec of Object.keys(byKecamatan)) {
+    const clusters = [];
+    for (const name of byKecamatan[kec]) {
+      if (!clusters.some((rep) => isSimilarDesaName(name, rep))) clusters.push(name);
+    }
+    total += clusters.length;
+  }
+  return total;
+}
+
+async function kategoriBreakdown(db, table, cats, kategoriMap, kecamatanFilter) {
+  const sql = kecamatanFilter
+    ? `SELECT kategori, status, COUNT(*) as jumlah FROM ${table} WHERE kecamatan = ? GROUP BY kategori, status`
+    : `SELECT kategori, status, COUNT(*) as jumlah FROM ${table} GROUP BY kategori, status`;
+  const results = kecamatanFilter ? await dbAll(db, sql, [kecamatanFilter]) : await dbAll(db, sql);
+
+  const breakdown = {};
+  for (const key of cats) breakdown[key] = { label: kategoriMap[key], sesuai: 0, tidakSesuai: 0, jumlah: 0 };
+  let total = 0;
+  for (const row of results) {
+    if (!breakdown[row.kategori]) continue;
+    if (row.status === "Sesuai") breakdown[row.kategori].sesuai += row.jumlah;
+    else breakdown[row.kategori].tidakSesuai += row.jumlah;
+    breakdown[row.kategori].jumlah += row.jumlah;
+    total += row.jumlah;
+  }
+  return { total, breakdown: Object.entries(breakdown).map(([kode, v]) => ({ kode, ...v })) };
+}
+
+async function triwulanComparison(db, kecamatanFilter) {
+  const results = kecamatanFilter
+    ? await dbAll(db, "SELECT * FROM rekap_triwulan WHERE kecamatan = ? ORDER BY triwulan", [kecamatanFilter])
+    : await dbAll(db, "SELECT * FROM rekap_triwulan ORDER BY triwulan");
+
+  const byTriwulan = {};
+  for (const row of results) {
+    const t = withTotals(row);
+    if (!byTriwulan[row.triwulan]) byTriwulan[row.triwulan] = { triwulan: row.triwulan, laki: 0, perempuan: 0, total: 0 };
+    byTriwulan[row.triwulan].laki += t.hasil_laki;
+    byTriwulan[row.triwulan].perempuan += t.hasil_perempuan;
+    byTriwulan[row.triwulan].total += t.hasil_total;
+  }
+  return Object.values(byTriwulan).sort((a, b) => a.triwulan.localeCompare(b.triwulan));
+}
 
 async function handleUjiPetikApi(request, url, db, user) {
   const path = url.pathname;
-  // TODO: sama seperti di atas, sumbernya uji-petik-malang lama.
+  const method = request.method;
+
+  // ---- Helper generik: daftar nilai unik 1 kolom (dipakai untuk dropdown triwulan/periode) ----
+  if (path === "/api/uji-petik/checklist/list-triwulan" && method === "GET") {
+    const results = await dbAll(db, "SELECT DISTINCT triwulan as v FROM checklist_jawaban ORDER BY triwulan DESC");
+    return json({ values: results.map((r) => r.v) });
+  }
+  if (path === "/api/uji-petik/rekap-triwulan/list-triwulan" && method === "GET") {
+    const results = await dbAll(db, "SELECT DISTINCT triwulan as v FROM rekap_triwulan ORDER BY triwulan DESC");
+    return json({ values: results.map((r) => r.v) });
+  }
+  if (path === "/api/uji-petik/sampel-tms/list-periode" && method === "GET") {
+    const results = await dbAll(db, "SELECT DISTINCT periode as v FROM sampel_tms ORDER BY periode DESC");
+    return json({ values: results.map((r) => r.v) });
+  }
+  if (path === "/api/uji-petik/sampel-ms/list-periode" && method === "GET") {
+    const results = await dbAll(db, "SELECT DISTINCT periode as v FROM sampel_ms ORDER BY periode DESC");
+    return json({ values: results.map((r) => r.v) });
+  }
+  if (path === "/api/uji-petik/sampel-dpb/list-periode" && method === "GET") {
+    const results = await dbAll(db, "SELECT DISTINCT periode as v FROM sampel_dpb ORDER BY periode DESC");
+    return json({ values: results.map((r) => r.v) });
+  }
+
+  // ---- TAB 1: Checklist 40 prosedur A-DPB1 ----
+  if (path === "/api/uji-petik/checklist" && method === "GET") {
+    const triwulan = url.searchParams.get("triwulan");
+    if (!triwulan) return json({ error: "Parameter triwulan wajib diisi" }, 400);
+    const results = await dbAll(db, "SELECT nomor_item, jawaban, keterangan FROM checklist_jawaban WHERE triwulan = ?", [triwulan]);
+    const jawaban = {};
+    for (const row of results) jawaban[row.nomor_item] = { jawaban: row.jawaban, keterangan: row.keterangan };
+    return json({ triwulan, jawaban });
+  }
+  if (path === "/api/uji-petik/checklist" && method === "POST") {
+    const { triwulan, jawaban } = await request.json();
+    if (!triwulan || !Array.isArray(jawaban)) return json({ error: "triwulan dan jawaban (array) wajib diisi" }, 400);
+    for (const j of jawaban) {
+      await dbRun(
+        db,
+        `INSERT INTO checklist_jawaban (triwulan, nomor_item, jawaban, keterangan, diisi_oleh)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(triwulan, nomor_item) DO UPDATE SET
+           jawaban = excluded.jawaban, keterangan = excluded.keterangan,
+           diisi_oleh = excluded.diisi_oleh, diisi_pada = datetime('now')`,
+        [triwulan, j.nomor_item, j.jawaban || null, j.keterangan || null, user.username]
+      );
+    }
+    return json({ ok: true, saved: jawaban.length });
+  }
+
+  // ---- TAB 2: Rekap triwulan A-DPB2 ----
+  if (path === "/api/uji-petik/rekap-triwulan" && method === "GET") {
+    const triwulan = url.searchParams.get("triwulan");
+    if (!triwulan) return json({ error: "Parameter triwulan wajib diisi" }, 400);
+
+    const results = await dbAll(db, "SELECT * FROM rekap_triwulan WHERE triwulan = ?", [triwulan]);
+    const prevResults = await dbAll(db, "SELECT * FROM rekap_triwulan WHERE triwulan = ?", [previousTriwulan(triwulan)]);
+    const prevByKecamatan = {};
+    for (const row of prevResults) prevByKecamatan[row.kecamatan] = withTotals(row);
+
+    // Gabungan kecamatan yang sudah punya data di triwulan ini ATAU triwulan sebelumnya
+    // (supaya carry-forward tetap kelihatan sebelum admin klik Simpan).
+    const kecSet = new Set([...results.map((r) => r.kecamatan), ...prevResults.map((r) => r.kecamatan)]);
+
+    const rows = [...kecSet].sort().map((kec) => {
+      const existing = results.find((r) => r.kecamatan === kec);
+      if (existing) return { ...withTotals(existing), carried_forward: false };
+
+      const base = { kecamatan: kec, triwulan, ...Object.fromEntries(REKAP_TW_FIELDS.map((f) => [f, 0])) };
+      const prev = prevByKecamatan[kec];
+      let carried = false;
+      if (prev) {
+        base.pdpb_awal_laki = prev.hasil_laki;
+        base.pdpb_awal_perempuan = prev.hasil_perempuan;
+        carried = true;
+      }
+      return { ...withTotals(base), carried_forward: carried };
+    });
+
+    const grandRaw = Object.fromEntries(REKAP_TW_FIELDS.map((f) => [f, 0]));
+    for (const r of rows) for (const f of REKAP_TW_FIELDS) grandRaw[f] += r[f] || 0;
+    const grand = withTotals(grandRaw);
+
+    return json({ triwulan, rows, grand, tmsCats: TMS_CATS, baruCats: BARU_CATS });
+  }
+  if (path === "/api/uji-petik/rekap-triwulan" && method === "POST") {
+    const body = await request.json();
+    const { triwulan, kecamatan } = body;
+    if (!triwulan || !kecamatan) return json({ error: "triwulan dan kecamatan wajib diisi" }, 400);
+
+    const values = REKAP_TW_FIELDS.map((f) => Number(body[f]) || 0);
+    await dbRun(
+      db,
+      `INSERT INTO rekap_triwulan (triwulan, kecamatan, ${REKAP_TW_FIELDS.join(", ")}, diubah_oleh)
+       VALUES (?, ?, ${REKAP_TW_FIELDS.map(() => "?").join(", ")}, ?)
+       ON CONFLICT(triwulan, kecamatan) DO UPDATE SET
+         ${REKAP_TW_FIELDS.map((f) => `${f} = excluded.${f}`).join(", ")},
+         diubah_oleh = excluded.diubah_oleh, diubah_pada = datetime('now')`,
+      [triwulan, kecamatan, ...values, user.username]
+    );
+    return json({ ok: true });
+  }
+
+  // ---- Masukan & Tanggapan Pleno A-DPB3 ----
+  if (path === "/api/uji-petik/rekap-triwulan/masukan" && method === "GET") {
+    const triwulan = url.searchParams.get("triwulan");
+    if (!triwulan) return json({ error: "Parameter triwulan wajib diisi" }, 400);
+    const results = await dbAll(db, "SELECT * FROM rekap_triwulan_masukan WHERE triwulan = ? ORDER BY id", [triwulan]);
+    return json({ data: results });
+  }
+  if (path === "/api/uji-petik/rekap-triwulan/masukan" && method === "POST") {
+    const { triwulan, nama_instansi, masukan_tanggapan, tindak_lanjut, keterangan } = await request.json();
+    if (!triwulan || !nama_instansi) return json({ error: "triwulan dan nama_instansi wajib diisi" }, 400);
+    await dbRun(
+      db,
+      `INSERT INTO rekap_triwulan_masukan (triwulan, nama_instansi, masukan_tanggapan, tindak_lanjut, keterangan, dicatat_oleh)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [triwulan, nama_instansi, masukan_tanggapan || null, tindak_lanjut || null, keterangan || null, user.username]
+    );
+    return json({ ok: true });
+  }
+  if (path === "/api/uji-petik/rekap-triwulan/masukan" && method === "DELETE") {
+    const id = url.searchParams.get("id");
+    if (!id) return json({ error: "Parameter id wajib diisi" }, 400);
+    await dbRun(db, "DELETE FROM rekap_triwulan_masukan WHERE id = ?", [id]);
+    return json({ ok: true });
+  }
+
+  // ---- TAB 3 & 4: Sampel TMS (A-DPB5) & Sampel Pemilih Baru/MS (A-DPB7) ----
+  // Kedua tab strukturnya identik (beda tabel & kategori saja), ditangani 1 blok kode dengan
+  // parameter `table` dan `kategoriMap` yang dipilih sesuai prefix path.
+  const sampelConfig = path.startsWith("/api/uji-petik/sampel-tms")
+    ? { table: "sampel_tms", kategoriMap: TMS_KATEGORI, prefix: "/api/uji-petik/sampel-tms" }
+    : path.startsWith("/api/uji-petik/sampel-ms")
+    ? { table: "sampel_ms", kategoriMap: MS_KATEGORI, prefix: "/api/uji-petik/sampel-ms" }
+    : null;
+
+  if (sampelConfig && path === `${sampelConfig.prefix}/rekap` && method === "GET") {
+    const periode = url.searchParams.get("periode");
+    if (!periode) return json({ error: "Parameter periode wajib diisi" }, 400);
+    const results = await dbAll(db, `SELECT kategori, status, COUNT(*) as jumlah FROM ${sampelConfig.table} WHERE periode = ? GROUP BY kategori, status`, [periode]);
+    const breakdown = {};
+    for (const key of Object.keys(sampelConfig.kategoriMap)) breakdown[key] = { label: sampelConfig.kategoriMap[key], sesuai: 0, tidakSesuai: 0, jumlah: 0 };
+    let total = 0;
+    for (const row of results) {
+      if (!breakdown[row.kategori]) continue;
+      if (row.status === "Sesuai") breakdown[row.kategori].sesuai += row.jumlah;
+      else breakdown[row.kategori].tidakSesuai += row.jumlah;
+      breakdown[row.kategori].jumlah += row.jumlah;
+      total += row.jumlah;
+    }
+    return json({ periode, total, breakdown: Object.entries(breakdown).map(([kode, v]) => ({ kode, ...v })) });
+  }
+
+  if (sampelConfig && path === `${sampelConfig.prefix}/bulk` && method === "POST") {
+    const { rows } = await request.json();
+    if (!Array.isArray(rows) || rows.length === 0) return json({ error: "Tidak ada baris data untuk disimpan" }, 400);
+    let inserted = 0;
+    for (const row of rows) {
+      if (!row.periode || !row.nama || !row.kecamatan || !row.kategori || !(row.kategori in sampelConfig.kategoriMap)) continue;
+      const status = row.status === "Tidak Sesuai" ? "Tidak Sesuai" : "Sesuai";
+      await dbRun(
+        db,
+        `INSERT INTO ${sampelConfig.table} (periode, nama, nik, alamat, kelurahan, kecamatan, kategori, status, keterangan, dientri_oleh)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [row.periode, row.nama, row.nik || null, row.alamat || null, row.kelurahan || null, row.kecamatan, row.kategori, status, row.keterangan || null, user.username]
+      );
+      inserted++;
+    }
+    if (inserted === 0) return json({ error: "Tidak ada baris valid untuk disimpan" }, 400);
+    return json({ ok: true, inserted });
+  }
+
+  if (sampelConfig && path === sampelConfig.prefix && method === "GET") {
+    const periode = url.searchParams.get("periode");
+    if (!periode) return json({ error: "Parameter periode wajib diisi" }, 400);
+    const results = await dbAll(db, `SELECT * FROM ${sampelConfig.table} WHERE periode = ? ORDER BY dientri_pada DESC`, [periode]);
+    return json({ data: results });
+  }
+
+  if (sampelConfig && path === sampelConfig.prefix && method === "POST") {
+    const body = await request.json();
+    const { id, periode, nama, nik, alamat, kelurahan, kecamatan, kategori, status, keterangan } = body;
+    if (!periode || !nama || !kecamatan || !kategori) return json({ error: "periode, nama, kecamatan, dan kategori wajib diisi" }, 400);
+    if (!(kategori in sampelConfig.kategoriMap)) return json({ error: "Kategori tidak valid" }, 400);
+    if (status && status !== "Sesuai" && status !== "Tidak Sesuai") return json({ error: "Status harus 'Sesuai' atau 'Tidak Sesuai'" }, 400);
+
+    if (id) {
+      await dbRun(
+        db,
+        `UPDATE ${sampelConfig.table} SET periode=?, nama=?, nik=?, alamat=?, kelurahan=?, kecamatan=?, kategori=?, status=?, keterangan=? WHERE id = ?`,
+        [periode, nama, nik || null, alamat || null, kelurahan || null, kecamatan, kategori, status || "Sesuai", keterangan || null, id]
+      );
+      return json({ ok: true, id });
+    }
+
+    const result = await dbRun(
+      db,
+      `INSERT INTO ${sampelConfig.table} (periode, nama, nik, alamat, kelurahan, kecamatan, kategori, status, keterangan, dientri_oleh)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [periode, nama, nik || null, alamat || null, kelurahan || null, kecamatan, kategori, status || "Sesuai", keterangan || null, user.username]
+    );
+    return json({ ok: true, id: result.lastInsertRowid ? Number(result.lastInsertRowid) : undefined });
+  }
+
+  if (sampelConfig && path === sampelConfig.prefix && method === "DELETE") {
+    const id = url.searchParams.get("id");
+    if (!id) return json({ error: "Parameter id wajib diisi" }, 400);
+    await dbRun(db, `DELETE FROM ${sampelConfig.table} WHERE id = ?`, [id]);
+    return json({ ok: true });
+  }
+
+  // ---- TAB 5: Sampel DPB A-DPB8 ----
+  if (path === "/api/uji-petik/sampel-dpb" && method === "GET") {
+    const periode = url.searchParams.get("periode");
+    if (!periode) return json({ error: "Parameter periode wajib diisi" }, 400);
+    const results = await dbAll(db, "SELECT * FROM sampel_dpb WHERE periode = ? ORDER BY dientri_pada DESC", [periode]);
+    return json({ data: results });
+  }
+  if (path === "/api/uji-petik/sampel-dpb" && method === "POST") {
+    const body = await request.json();
+    const { id, periode, nama, nik, alamat, kelurahan, kecamatan, hasil, kategori_tidak_sesuai, keterangan } = body;
+    if (!periode || !nama || !kecamatan) return json({ error: "periode, nama, dan kecamatan wajib diisi" }, 400);
+    if (hasil && hasil !== "Sesuai" && hasil !== "Tidak Sesuai") return json({ error: "Hasil harus 'Sesuai' atau 'Tidak Sesuai'" }, 400);
+    if (hasil === "Tidak Sesuai" && (!kategori_tidak_sesuai || !(kategori_tidak_sesuai in TMS_KATEGORI))) {
+      return json({ error: "Kategori wajib dipilih ketika hasil Tidak Sesuai" }, 400);
+    }
+    const kategoriFinal = hasil === "Tidak Sesuai" ? kategori_tidak_sesuai : null;
+
+    if (id) {
+      await dbRun(
+        db,
+        `UPDATE sampel_dpb SET periode=?, nama=?, nik=?, alamat=?, kelurahan=?, kecamatan=?, hasil=?, kategori_tidak_sesuai=?, keterangan=? WHERE id = ?`,
+        [periode, nama, nik || null, alamat || null, kelurahan || null, kecamatan, hasil || "Sesuai", kategoriFinal, keterangan || null, id]
+      );
+      return json({ ok: true, id });
+    }
+
+    const result = await dbRun(
+      db,
+      `INSERT INTO sampel_dpb (periode, nama, nik, alamat, kelurahan, kecamatan, hasil, kategori_tidak_sesuai, keterangan, dientri_oleh)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [periode, nama, nik || null, alamat || null, kelurahan || null, kecamatan, hasil || "Sesuai", kategoriFinal, keterangan || null, user.username]
+    );
+    return json({ ok: true, id: result.lastInsertRowid ? Number(result.lastInsertRowid) : undefined });
+  }
+  if (path === "/api/uji-petik/sampel-dpb" && method === "DELETE") {
+    const id = url.searchParams.get("id");
+    if (!id) return json({ error: "Parameter id wajib diisi" }, 400);
+    await dbRun(db, "DELETE FROM sampel_dpb WHERE id = ?", [id]);
+    return json({ ok: true });
+  }
+  if (path === "/api/uji-petik/sampel-dpb/bulk" && method === "POST") {
+    const { rows } = await request.json();
+    if (!Array.isArray(rows) || rows.length === 0) return json({ error: "Tidak ada baris data untuk disimpan" }, 400);
+    let inserted = 0;
+    for (const row of rows) {
+      if (!row.periode || !row.nama || !row.kecamatan) continue;
+      const hasil = row.hasil === "Tidak Sesuai" ? "Tidak Sesuai" : "Sesuai";
+      const kategoriFinal = hasil === "Tidak Sesuai" && row.kategori_tidak_sesuai in TMS_KATEGORI ? row.kategori_tidak_sesuai : null;
+      await dbRun(
+        db,
+        `INSERT INTO sampel_dpb (periode, nama, nik, alamat, kelurahan, kecamatan, hasil, kategori_tidak_sesuai, keterangan, dientri_oleh)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [row.periode, row.nama, row.nik || null, row.alamat || null, row.kelurahan || null, row.kecamatan, hasil, kategoriFinal, row.keterangan || null, user.username]
+      );
+      inserted++;
+    }
+    if (inserted === 0) return json({ error: "Tidak ada baris valid untuk disimpan" }, 400);
+    return json({ ok: true, inserted });
+  }
+  if (path === "/api/uji-petik/sampel-dpb/rekap" && method === "GET") {
+    const periode = url.searchParams.get("periode");
+    if (!periode) return json({ error: "Parameter periode wajib diisi" }, 400);
+
+    const totalRow = await dbFirst(db, "SELECT COUNT(*) as total FROM sampel_dpb WHERE periode = ?", [periode]);
+    const sesuaiRow = await dbFirst(db, "SELECT COUNT(*) as jumlah FROM sampel_dpb WHERE periode = ? AND hasil = 'Sesuai'", [periode]);
+    const tidakRows = await dbAll(db, "SELECT kategori_tidak_sesuai, COUNT(*) as jumlah FROM sampel_dpb WHERE periode = ? AND hasil = 'Tidak Sesuai' GROUP BY kategori_tidak_sesuai", [periode]);
+
+    const breakdownTidakSesuai = tidakRows.map((r) => ({ kode: r.kategori_tidak_sesuai, label: TMS_KATEGORI[r.kategori_tidak_sesuai] || r.kategori_tidak_sesuai, jumlah: r.jumlah }));
+
+    return json({ periode, total: totalRow.total, sesuai: sesuaiRow.jumlah, tidakSesuai: totalRow.total - sesuaiRow.jumlah, breakdownTidakSesuai });
+  }
+
+  // ---- TAB 6: Infografis (agregasi lintas tabel untuk peta + chart) ----
+  if (path === "/api/uji-petik/infografis/kabupaten" && method === "GET") {
+    const data = await withCache(["uji-petik-infografis-kabupaten", user.kabkotaKode], 300, async () => {
+      const triwulan = await latestTriwulan(db);
+      const [perKecamatan, monthly, desaCount, ms, tms, triwulanComp] = await Promise.all([
+        perKecamatanHasilAkhir(db, triwulan),
+        monthlyMsTms(db, null),
+        desaDiujiPetikCount(db, null),
+        kategoriBreakdown(db, "sampel_ms", BARU_CATS, MS_KATEGORI, null),
+        kategoriBreakdown(db, "sampel_tms", TMS_CATS, TMS_KATEGORI, null),
+        triwulanComparison(db, null),
+      ]);
+      return {
+        triwulan, perKecamatan, monthlyMsTms: monthly, desaDiujiPetik: desaCount,
+        totalMsDiujiPetik: ms.total, totalTmsDiujiPetik: tms.total,
+        kategoriMs: ms.breakdown, kategoriTms: tms.breakdown, triwulanComparison: triwulanComp,
+      };
+    });
+    return json(data);
+  }
+  if (path === "/api/uji-petik/infografis/kecamatan" && method === "GET") {
+    const kecamatan = url.searchParams.get("nama");
+    if (!kecamatan) return json({ error: "Parameter nama (kecamatan) wajib diisi" }, 400);
+
+    const data = await withCache(["uji-petik-infografis-kecamatan", user.kabkotaKode, kecamatan], 300, async () => {
+      const triwulan = await latestTriwulan(db);
+      const [perKecamatan, monthly, desaCount, ms, tms, triwulanComp] = await Promise.all([
+        perKecamatanHasilAkhir(db, triwulan),
+        monthlyMsTms(db, kecamatan),
+        desaDiujiPetikCount(db, kecamatan),
+        kategoriBreakdown(db, "sampel_ms", BARU_CATS, MS_KATEGORI, kecamatan),
+        kategoriBreakdown(db, "sampel_tms", TMS_CATS, TMS_KATEGORI, kecamatan),
+        triwulanComparison(db, kecamatan),
+      ]);
+      const found = perKecamatan.find((k) => k.kecamatan === kecamatan) || { laki: 0, perempuan: 0, total: 0 };
+      return {
+        kecamatan, triwulan, laki: found.laki, perempuan: found.perempuan, total: found.total,
+        monthlyMsTms: monthly, desaDiujiPetik: desaCount,
+        totalMsDiujiPetik: ms.total, totalTmsDiujiPetik: tms.total,
+        kategoriMs: ms.breakdown, kategoriTms: tms.breakdown, triwulanComparison: triwulanComp,
+      };
+    });
+    return json(data);
+  }
+
   return json({ error: "Endpoint modul uji petik belum dipindahkan: " + path }, 501);
 }
 
