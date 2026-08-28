@@ -97,7 +97,8 @@ for (let i = 0; i < JUMLAH; i++) {
   const seed = i + 1;
   const isL = i % 2 === 0;
   const nama = pick(isL ? NAMA_L : NAMA_P, seed).replace(/'/g, "''");
-  const kelurahan = pick(info.desa, seed);
+  const kelurahan = pick(info.desa, seed).replace(/'/g, "''");
+  const kecamatanEsc = info.kecamatan.replace(/'/g, "''");
   const alamat = `${pick(JALAN, seed)} No.${1 + (seed * 4) % 30}`;
   const rt = pad(1 + (seed % 15), 2);
   const rw = pad(1 + (seed % 8), 2);
@@ -109,7 +110,7 @@ for (let i = 0; i < JUMLAH; i++) {
   const tglLahir = randomTanggalLahir(seed);
   const stsKawin = pick(STS_KAWIN, seed);
 
-  out += `INSERT INTO pemilih (kecamatan, kelurahan, nkk, nik, nama, tempat_lahir, tanggal_lahir, sts_kawin, kelamin, alamat, rt, rw, disabilitas, ektp, keterangan, sumber, tps, kode_tms, tanggal_tms, tanggal_input) VALUES ('${info.kecamatan}', '${kelurahan}', '${nkk}', '${nik}', '${nama}', '${info.kecamatan}', '${tglLahir}', '${stsKawin}', '${isL ? "L" : "P"}', '${alamat}', '${rt}', '${rw}', ${disabilitas ? `'${disabilitas}'` : "NULL"}, 'S', NULL, 'PDPB', '${tps}', ${kodeTms ? `'${kodeTms}'` : "NULL"}, ${kodeTms ? "datetime('now')" : "NULL"}, datetime('now'));\n`;
+  out += `INSERT INTO pemilih (kecamatan, kelurahan, nkk, nik, nama, tempat_lahir, tanggal_lahir, sts_kawin, kelamin, alamat, rt, rw, disabilitas, ektp, keterangan, sumber, tps, kode_tms, tanggal_tms, tanggal_input) VALUES ('${kecamatanEsc}', '${kelurahan}', '${nkk}', '${nik}', '${nama}', '${kecamatanEsc}', '${tglLahir}', '${stsKawin}', '${isL ? "L" : "P"}', '${alamat}', '${rt}', '${rw}', ${disabilitas ? `'${disabilitas}'` : "NULL"}, 'S', NULL, 'PDPB', '${tps}', ${kodeTms ? `'${kodeTms}'` : "NULL"}, ${kodeTms ? "datetime('now')" : "NULL"}, datetime('now'));\n`;
 }
 
 process.stdout.write(out);
