@@ -505,6 +505,33 @@ async function handlePemilihApi(request, url, db, user) {
     return csvResponse(toCsv(rows), `${tabel}-${user.kabkotaKode}.csv`);
   }
 
+  // ---- Import massal dari Excel yang sudah diupload+diparse di frontend (khusus tab Data) ----
+  // Beda dari /api/pemilih/pemilih-baru (satu kecamatan untuk semua baris, dipakai tab Input
+  // Pemilih Baru) -- endpoint ini terima kecamatan PER BARIS, format sama seperti template Excel:
+  // [kecamatan, kelurahan, nkk, nik, nama, tempat_lahir, tanggal_lahir, sts_kawin, kelamin,
+  //  alamat, rt, rw, disabilitas, ektp, keterangan, sumber, tps]
+  if (path === "/api/pemilih/import-excel" && method === "POST") {
+    const { rows } = await request.json();
+    if (!Array.isArray(rows) || rows.length === 0) return json({ error: "Tidak ada baris data untuk diimpor" }, 400);
+
+    let inserted = 0;
+    let dilewati = 0;
+    for (const row of rows) {
+      const kecamatan = row[0];
+      const rest = row.slice(1, 1 + INPUT_COLS.length);
+      const nama = rest[3];
+      if (!kecamatan || !nama) { dilewati++; continue; }
+      await dbRun(
+        db,
+        `INSERT INTO pemilih (kecamatan, ${INPUT_COLS.join(", ")}, tanggal_input)
+         VALUES (?, ${INPUT_COLS.map(() => "?").join(", ")}, datetime('now'))`,
+        [kecamatan, ...rest]
+      );
+      inserted++;
+    }
+    return json({ ok: true, inserted, dilewati });
+  }
+
   // ---- TAB DATA: cari/list pemilih (support pencarian NIK massal) ----
   if (path === "/api/pemilih/data" && method === "GET") {
     const kecamatan = url.searchParams.get("kecamatan");

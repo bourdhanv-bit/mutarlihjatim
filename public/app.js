@@ -221,12 +221,13 @@ function superadminImportColumns() {
 // legenda) dan baris 3 (header) di template otomatis dilewati; baris contoh kuning ikut diimpor
 // KECUALI kolom Kecamatan/Nama-nya dikosongkan dulu oleh user (kalau tidak, ikut masuk sebagai
 // data biasa -- diberi peringatan di pratinjau).
-function initSuperadminImportUpload(root) {
+// Fungsi generik dipakai di 2 tempat: dashboard Super Admin (target kab/kota dipilih manual) dan
+// tab Data tiap kab/kota (target otomatis kab/kota yang sedang login, tanpa perlu pilih).
+function setupExcelImportUI(root, ids, doImport) {
   let parsedRows = [];
 
-  qs("#sa-import-parse", root).addEventListener("click", () => {
-    const fileInput = qs("#sa-import-file", root);
-    const file = fileInput.files[0];
+  qs(`#${ids.parseBtnId}`, root).addEventListener("click", () => {
+    const file = qs(`#${ids.fileId}`, root).files[0];
     if (!file) return toast("Pilih file Excel dulu", true);
 
     const reader = new FileReader();
@@ -236,9 +237,6 @@ function initSuperadminImportUpload(root) {
         const sheet = wb.Sheets[wb.SheetNames[0]];
         const allRows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
 
-        // Lewati baris judul/legenda/header template (baris 1-3). Kalau file bukan dari template
-        // resmi (mis. header dipindah/dihapus user), deteksi otomatis: cari baris pertama yang
-        // kolom pertamanya BUKAN salah satu dari label header yang kita kenal.
         let startIdx = 0;
         for (let i = 0; i < Math.min(allRows.length, 5); i++) {
           const firstCell = String(allRows[i][0] || "").trim().toLowerCase();
@@ -262,7 +260,7 @@ function initSuperadminImportUpload(root) {
   });
 
   function renderPreview() {
-    const previewEl = qs("#sa-import-preview", root);
+    const previewEl = qs(`#${ids.previewId}`, root);
     if (parsedRows.length === 0) {
       previewEl.innerHTML = `<div class="empty-state">Tidak ada baris terbaca dari file ini.</div>`;
       return;
@@ -278,19 +276,25 @@ function initSuperadminImportUpload(root) {
         <tbody>${parsedRows.slice(0, 50).map((r) => `<tr>${r.map((v) => `<td>${esc(v)}</td>`).join("")}</tr>`).join("")}</tbody>
       </table></div>
       ${parsedRows.length > 50 ? `<p style="font-size:11.5px;color:var(--muted)">Menampilkan 50 baris pertama saja sebagai pratinjau, semua ${parsedRows.length} baris tetap akan diimpor.</p>` : ""}
-      <button class="btn btn-orange" id="sa-import-confirm" style="margin-top:10px">Import ${valid.length} Baris ke Database</button>
+      <button class="btn btn-orange" id="${ids.previewId}-confirm" style="margin-top:10px">Import ${valid.length} Baris ke Database</button>
     `;
-    qs("#sa-import-confirm", previewEl).addEventListener("click", async () => {
-      const kode = qs("#sa-import-kode", root).value;
+    qs(`#${ids.previewId}-confirm`, previewEl).addEventListener("click", async () => {
       try {
-        const data = await api("/api/superadmin/import-pemilih", { method: "POST", body: JSON.stringify({ kode, rows: parsedRows }) });
+        const data = await doImport(parsedRows);
         toast(`${data.inserted} baris tersimpan${data.dilewati ? `, ${data.dilewati} baris dilewati` : ""}`);
         parsedRows = [];
-        qs("#sa-import-file", root).value = "";
+        qs(`#${ids.fileId}`, root).value = "";
         previewEl.innerHTML = "";
       } catch (err) { toast(err.message, true); }
     });
   }
+}
+
+function initSuperadminImportUpload(root) {
+  setupExcelImportUI(root, { fileId: "sa-import-file", parseBtnId: "sa-import-parse", previewId: "sa-import-preview" }, (rows) => {
+    const kode = qs("#sa-import-kode", root).value;
+    return api("/api/superadmin/import-pemilih", { method: "POST", body: JSON.stringify({ kode, rows }) });
+  });
 }
 
 qs("#login-form").addEventListener("submit", async (e) => {
@@ -594,8 +598,30 @@ async function renderPemilihCari(root) {
         <div class="field" style="align-self:flex-end"><button class="btn btn-orange" id="btn-cari">Cari</button></div>
       </div>
     </div>
+    <div class="card">
+      <h2>Generate Data Pemilih dari Excel</h2>
+      <a class="btn btn-orange" href="/templates/template-import-pemilih.xlsx" download>Unduh Template Excel</a>
+      <p class="card-desc" style="margin-top:12px">
+        1) Unduh template di atas (bisa diunduh ulang kapan saja kalau lupa formatnya), isi datanya
+        di Excel (urutan kolom: Kecamatan, Kelurahan, NKK, NIK, Nama, Tempat Lahir, Tgl Lahir,
+        Sts Kawin, Kelamin, Alamat, RT, RW, Disabilitas, EKTP, Keterangan, Sumber, TPS -- boleh
+        berisi banyak kecamatan sekaligus dalam 1 file). 2) Upload file yang sudah diisi.
+        3) Klik Import -- data langsung masuk ke database kecamatan Anda.
+      </p>
+      <div class="field-row">
+        <div class="field" style="flex:2"><label>File Excel yang sudah diisi (.xlsx)</label>
+          <input id="pd-import-file" type="file" accept=".xlsx,.xls" />
+        </div>
+        <div class="field" style="align-self:flex-end"><button class="btn" id="pd-import-parse">Baca File</button></div>
+      </div>
+      <div id="pd-import-preview" style="margin-top:16px"></div>
+    </div>
     <div id="hasil-cari"></div>
   `;
+  setupExcelImportUI(root, { fileId: "pd-import-file", parseBtnId: "pd-import-parse", previewId: "pd-import-preview" }, (rows) =>
+    api("/api/pemilih/import-excel", { method: "POST", body: JSON.stringify({ rows }) })
+  );
+
   const kecSel = qs("#f-kecamatan", root), kelSel = qs("#f-kelurahan", root), tpsSel = qs("#f-tps", root);
   await populateKecamatanDropdown(kecSel);
   kecSel.addEventListener("change", async () => {
