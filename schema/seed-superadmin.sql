@@ -1,0 +1,1 @@
+INSERT INTO users (username, password_hash, nama, role, kabkota_id) VALUES ('super-admin', 'b3b2e416cffe5641fa098a2a32dded77:e0b446a9567a45c5c39d1b8233959e42fd7b99548238da5dec378866db38e3f6', 'Super Admin', 'super_admin', NULL);

@@ -173,26 +173,24 @@ async function renderSuperAdminHome() {
     </div>
     <div class="card">
       <h2>Generate Data Pemilih dari Excel (untuk kab/kota manapun)</h2>
-      <p class="card-desc">
-        Tempel data dari Excel ke sel manapun di tabel ini (urutan kolom: Kecamatan, Kelurahan, NKK,
-        NIK, Nama, Tempat Lahir, Tgl Lahir, Sts Kawin, Kelamin, Alamat, RT, RW, Disabilitas, EKTP,
-        Keterangan, Sumber, TPS). Data langsung dimasukkan ke database kab/kota tujuan begitu Simpan diklik.
+      <a class="btn btn-orange" href="/templates/template-import-pemilih.xlsx" download>Unduh Template Excel</a>
+      <p class="card-desc" style="margin-top:12px">
+        1) Unduh template di atas (bisa diunduh ulang kapan saja kalau lupa formatnya), isi datanya
+        di Excel (urutan kolom sudah ditentukan: Kecamatan, Kelurahan, NKK, NIK, Nama, Tempat Lahir,
+        Tgl Lahir, Sts Kawin, Kelamin, Alamat, RT, RW, Disabilitas, EKTP, Keterangan, Sumber, TPS).
+        2) Upload file yang sudah diisi. 3) Pilih kab/kota tujuan, klik Import -- data langsung
+        masuk ke database kab/kota itu.
       </p>
       <div class="field-row">
         <div class="field" style="max-width:320px"><label>Kab/Kota Tujuan *</label>
           <select id="sa-import-kode">${kabkotaList.map((k) => `<option value="${k.kode}">${esc(k.nama)}</option>`).join("")}</select>
         </div>
+        <div class="field" style="flex:2"><label>File Excel yang sudah diisi (.xlsx)</label>
+          <input id="sa-import-file" type="file" accept=".xlsx,.xls" />
+        </div>
+        <div class="field" style="align-self:flex-end"><button class="btn btn-orange" id="sa-import-parse">Baca File</button></div>
       </div>
-      <div class="table-scroll" style="max-height:480px">
-        <table>
-          <thead><tr><th>No</th>${superadminImportColumns().map((c) => `<th>${esc(c)}</th>`).join("")}<th></th></tr></thead>
-          <tbody id="sa-import-tbody"></tbody>
-        </table>
-      </div>
-      <div style="margin-top:12px;display:flex;gap:8px">
-        <button class="btn" id="sa-import-add-row">+ Tambah Baris</button>
-        <button class="btn btn-orange" id="sa-import-save">Simpan ke Database</button>
-      </div>
+      <div id="sa-import-preview" style="margin-top:16px"></div>
     </div>
   `;
 
@@ -201,7 +199,7 @@ async function renderSuperAdminHome() {
     box.addEventListener("click", () => superadminSwitch("kabkota", box.dataset.kode));
   });
 
-  initSuperadminImportGrid(content);
+  initSuperadminImportUpload(content);
 }
 
 async function superadminSwitch(target, kode) {
@@ -218,63 +216,81 @@ function superadminImportColumns() {
   return ["Kecamatan", ...INPUT_COLUMNS.map((c) => c.label)];
 }
 
-function initSuperadminImportGrid(root) {
-  const emptyRow = () => new Array(superadminImportColumns().length).fill("");
-  let gridRows = Array.from({ length: 8 }, emptyRow);
+// Baca file .xlsx yang diupload (pakai SheetJS, dimuat via CDN di index.html), tampilkan
+// pratinjau, baru kirim ke backend sebagai JSON kalau tombol Import diklik. Baris 1-2 (judul +
+// legenda) dan baris 3 (header) di template otomatis dilewati; baris contoh kuning ikut diimpor
+// KECUALI kolom Kecamatan/Nama-nya dikosongkan dulu oleh user (kalau tidak, ikut masuk sebagai
+// data biasa -- diberi peringatan di pratinjau).
+function initSuperadminImportUpload(root) {
+  let parsedRows = [];
 
-  function renderGrid() {
-    const tbody = qs("#sa-import-tbody", root);
-    tbody.innerHTML = gridRows.map((row, ri) => `
-      <tr>
-        <td>${ri + 1}</td>
-        ${row.map((val, ci) => `<td><input type="text" class="grid-cell sa-import-cell" data-row="${ri}" data-col="${ci}" value="${esc(val)}" /></td>`).join("")}
-        <td><button class="btn btn-sm btn-danger" data-remove-row="${ri}">&times;</button></td>
-      </tr>
-    `).join("");
+  qs("#sa-import-parse", root).addEventListener("click", () => {
+    const fileInput = qs("#sa-import-file", root);
+    const file = fileInput.files[0];
+    if (!file) return toast("Pilih file Excel dulu", true);
 
-    qsa(".sa-import-cell", tbody).forEach((inp) => {
-      inp.addEventListener("input", () => { gridRows[+inp.dataset.row][+inp.dataset.col] = inp.value; });
-      inp.addEventListener("paste", (e) => {
-        const text = (e.clipboardData || window.clipboardData).getData("text");
-        if (!text.includes("\t") && !text.includes("\n")) return;
-        e.preventDefault();
-        const startRow = +inp.dataset.row, startCol = +inp.dataset.col;
-        const lines = text.replace(/\r/g, "").split("\n");
-        while (lines.length && lines[lines.length - 1] === "") lines.pop();
-        lines.forEach((line, li) => {
-          const cells = line.split("\t");
-          const targetRow = startRow + li;
-          while (gridRows.length <= targetRow) gridRows.push(emptyRow());
-          cells.forEach((cellVal, ci) => {
-            const targetCol = startCol + ci;
-            if (targetCol < superadminImportColumns().length) gridRows[targetRow][targetCol] = cellVal.trim();
-          });
-        });
-        renderGrid();
-      });
-    });
-    qsa("[data-remove-row]", tbody).forEach((btn) => {
-      btn.addEventListener("click", () => {
-        gridRows.splice(+btn.dataset.removeRow, 1);
-        if (gridRows.length === 0) gridRows.push(emptyRow());
-        renderGrid();
-      });
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: "array" });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const allRows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
+
+        // Lewati baris judul/legenda/header template (baris 1-3). Kalau file bukan dari template
+        // resmi (mis. header dipindah/dihapus user), deteksi otomatis: cari baris pertama yang
+        // kolom pertamanya BUKAN salah satu dari label header yang kita kenal.
+        let startIdx = 0;
+        for (let i = 0; i < Math.min(allRows.length, 5); i++) {
+          const firstCell = String(allRows[i][0] || "").trim().toLowerCase();
+          if (firstCell === "kecamatan" || firstCell.includes("template") || firstCell.includes("isi mulai")) {
+            startIdx = i + 1;
+          }
+        }
+
+        const colCount = superadminImportColumns().length;
+        parsedRows = allRows
+          .slice(startIdx)
+          .map((r) => Array.from({ length: colCount }, (_, i) => String(r[i] ?? "").trim()))
+          .filter((r) => r.some((v) => v !== ""));
+
+        renderPreview();
+      } catch (err) {
+        toast("Gagal membaca file: " + err.message, true);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  });
+
+  function renderPreview() {
+    const previewEl = qs("#sa-import-preview", root);
+    if (parsedRows.length === 0) {
+      previewEl.innerHTML = `<div class="empty-state">Tidak ada baris terbaca dari file ini.</div>`;
+      return;
+    }
+    const valid = parsedRows.filter((r) => r[0] && r[4]);
+    const invalidCount = parsedRows.length - valid.length;
+    previewEl.innerHTML = `
+      <p style="font-size:12.5px;color:var(--muted)">
+        ${parsedRows.length} baris terbaca dari file, ${valid.length} baris valid (ada Kecamatan &amp; Nama)${invalidCount ? `, ${invalidCount} baris akan dilewati karena Kecamatan/Nama kosong` : ""}.
+      </p>
+      <div class="table-scroll" style="max-height:340px"><table>
+        <thead><tr>${superadminImportColumns().map((c) => `<th>${esc(c)}</th>`).join("")}</tr></thead>
+        <tbody>${parsedRows.slice(0, 50).map((r) => `<tr>${r.map((v) => `<td>${esc(v)}</td>`).join("")}</tr>`).join("")}</tbody>
+      </table></div>
+      ${parsedRows.length > 50 ? `<p style="font-size:11.5px;color:var(--muted)">Menampilkan 50 baris pertama saja sebagai pratinjau, semua ${parsedRows.length} baris tetap akan diimpor.</p>` : ""}
+      <button class="btn btn-orange" id="sa-import-confirm" style="margin-top:10px">Import ${valid.length} Baris ke Database</button>
+    `;
+    qs("#sa-import-confirm", previewEl).addEventListener("click", async () => {
+      const kode = qs("#sa-import-kode", root).value;
+      try {
+        const data = await api("/api/superadmin/import-pemilih", { method: "POST", body: JSON.stringify({ kode, rows: parsedRows }) });
+        toast(`${data.inserted} baris tersimpan${data.dilewati ? `, ${data.dilewati} baris dilewati` : ""}`);
+        parsedRows = [];
+        qs("#sa-import-file", root).value = "";
+        previewEl.innerHTML = "";
+      } catch (err) { toast(err.message, true); }
     });
   }
-  renderGrid();
-
-  qs("#sa-import-add-row", root).addEventListener("click", () => { gridRows.push(emptyRow()); renderGrid(); });
-  qs("#sa-import-save", root).addEventListener("click", async () => {
-    const kode = qs("#sa-import-kode", root).value;
-    const rows = gridRows.filter((r) => r[0] && r[0].trim() !== "" && r[4] && r[4].trim() !== ""); // wajib Kecamatan + Nama
-    if (rows.length === 0) return toast("Isi minimal 1 baris dengan Kecamatan dan Nama", true);
-    try {
-      const data = await api("/api/superadmin/import-pemilih", { method: "POST", body: JSON.stringify({ kode, rows }) });
-      toast(`${data.inserted} baris tersimpan${data.dilewati ? `, ${data.dilewati} baris dilewati (Kecamatan/Nama kosong)` : ""}`);
-      gridRows = Array.from({ length: 8 }, emptyRow);
-      renderGrid();
-    } catch (err) { toast(err.message, true); }
-  });
 }
 
 qs("#login-form").addEventListener("submit", async (e) => {
