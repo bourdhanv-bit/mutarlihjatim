@@ -117,10 +117,164 @@ function showLogin() {
 function showApp() {
   qs("#login-screen").classList.add("hidden");
   qs("#app-screen").classList.remove("hidden");
-  qs("#user-info").textContent = `${state.user.username} (${state.user.role === "admin_provinsi" ? "Provinsi" : state.user.kabkota})`;
+  const roleLabel = state.user.role === "admin_provinsi" ? "Provinsi" : state.user.role === "super_admin" ? "Super Admin" : state.user.kabkota;
+  qs("#user-info").textContent = `${state.user.username} (${roleLabel})`;
+
+  // Tombol "Kembali ke Super Admin" -- cuma muncul kalau sesi ini hasil "masuk sebagai" dari
+  // Super Admin (bukan login langsung sebagai admin_kabkota/admin_provinsi biasa).
+  const existingBtn = document.getElementById("btn-return-superadmin");
+  if (existingBtn) existingBtn.remove();
+  if (state.user.originRole === "super_admin") {
+    const btn = document.createElement("button");
+    btn.id = "btn-return-superadmin";
+    btn.className = "btn-ghost";
+    btn.style.marginRight = "8px";
+    btn.textContent = "Kembali ke Super Admin";
+    btn.addEventListener("click", async () => {
+      try { await api("/api/superadmin/return", { method: "POST" }); location.reload(); }
+      catch (err) { toast(err.message, true); }
+    });
+    qs("#user-info").insertAdjacentElement("beforebegin", btn);
+  }
+
+  if (state.user.role === "super_admin") {
+    renderSuperAdminHome();
+    return;
+  }
+
   renderSidebar();
   const firstModule = MODULES[state.user.role][0].key;
   goToModule(firstModule);
+}
+
+async function renderSuperAdminHome() {
+  qs("#topbar-logo").textContent = "SA";
+  qs("#topbar-title").textContent = "SUPER ADMIN";
+  qs("#topbar-subtitle").textContent = "Akses semua Kab/Kota & Provinsi";
+  qs("#sidebar").innerHTML = "";
+  qs("#main-nav").innerHTML = "";
+  qs("#main-nav").classList.add("hidden");
+
+  const content = qs("#main-content");
+  content.innerHTML = `<div class="empty-state">Memuat daftar kab/kota...</div>`;
+  const kabkotaList = await api("/api/master/kabkota");
+
+  content.innerHTML = `
+    <div class="card">
+      <h2>Pilih Tampilan</h2>
+      <p class="card-desc">Klik salah satu untuk masuk sebagai akun itu. Ada tombol "Kembali ke Super Admin" di kanan atas kapan saja untuk balik ke sini tanpa perlu login ulang.</p>
+      <button class="btn btn-orange" id="sa-btn-provinsi">Masuk sebagai Provinsi (AWASI MUTARLIH)</button>
+    </div>
+    <div class="card">
+      <h2>Kabupaten/Kota</h2>
+      <div class="stat-grid">
+        ${kabkotaList.map((k) => `<div class="stat-box sa-kabkota" data-kode="${k.kode}" style="cursor:pointer"><div class="label">${esc(k.nama)}</div></div>`).join("")}
+      </div>
+    </div>
+    <div class="card">
+      <h2>Generate Data Pemilih dari Excel (untuk kab/kota manapun)</h2>
+      <p class="card-desc">
+        Tempel data dari Excel ke sel manapun di tabel ini (urutan kolom: Kecamatan, Kelurahan, NKK,
+        NIK, Nama, Tempat Lahir, Tgl Lahir, Sts Kawin, Kelamin, Alamat, RT, RW, Disabilitas, EKTP,
+        Keterangan, Sumber, TPS). Data langsung dimasukkan ke database kab/kota tujuan begitu Simpan diklik.
+      </p>
+      <div class="field-row">
+        <div class="field" style="max-width:320px"><label>Kab/Kota Tujuan *</label>
+          <select id="sa-import-kode">${kabkotaList.map((k) => `<option value="${k.kode}">${esc(k.nama)}</option>`).join("")}</select>
+        </div>
+      </div>
+      <div class="table-scroll" style="max-height:480px">
+        <table>
+          <thead><tr><th>No</th>${superadminImportColumns().map((c) => `<th>${esc(c)}</th>`).join("")}<th></th></tr></thead>
+          <tbody id="sa-import-tbody"></tbody>
+        </table>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="btn" id="sa-import-add-row">+ Tambah Baris</button>
+        <button class="btn btn-orange" id="sa-import-save">Simpan ke Database</button>
+      </div>
+    </div>
+  `;
+
+  qs("#sa-btn-provinsi", content).addEventListener("click", () => superadminSwitch("provinsi"));
+  qsa(".sa-kabkota", content).forEach((box) => {
+    box.addEventListener("click", () => superadminSwitch("kabkota", box.dataset.kode));
+  });
+
+  initSuperadminImportGrid(content);
+}
+
+async function superadminSwitch(target, kode) {
+  try {
+    await api("/api/superadmin/switch", { method: "POST", body: JSON.stringify({ target, kode }) });
+    location.reload();
+  } catch (err) { toast(err.message, true); }
+}
+
+// 17 kolom: Kecamatan + 16 kolom yang sama dengan INPUT_COLUMNS milik Input Pemilih Baru.
+// Dibuat sebagai function (bukan const langsung) karena INPUT_COLUMNS baru didefinisikan lebih
+// bawah di file ini -- evaluasi ditunda sampai benar-benar dipanggil.
+function superadminImportColumns() {
+  return ["Kecamatan", ...INPUT_COLUMNS.map((c) => c.label)];
+}
+
+function initSuperadminImportGrid(root) {
+  const emptyRow = () => new Array(superadminImportColumns().length).fill("");
+  let gridRows = Array.from({ length: 8 }, emptyRow);
+
+  function renderGrid() {
+    const tbody = qs("#sa-import-tbody", root);
+    tbody.innerHTML = gridRows.map((row, ri) => `
+      <tr>
+        <td>${ri + 1}</td>
+        ${row.map((val, ci) => `<td><input type="text" class="grid-cell sa-import-cell" data-row="${ri}" data-col="${ci}" value="${esc(val)}" /></td>`).join("")}
+        <td><button class="btn btn-sm btn-danger" data-remove-row="${ri}">&times;</button></td>
+      </tr>
+    `).join("");
+
+    qsa(".sa-import-cell", tbody).forEach((inp) => {
+      inp.addEventListener("input", () => { gridRows[+inp.dataset.row][+inp.dataset.col] = inp.value; });
+      inp.addEventListener("paste", (e) => {
+        const text = (e.clipboardData || window.clipboardData).getData("text");
+        if (!text.includes("\t") && !text.includes("\n")) return;
+        e.preventDefault();
+        const startRow = +inp.dataset.row, startCol = +inp.dataset.col;
+        const lines = text.replace(/\r/g, "").split("\n");
+        while (lines.length && lines[lines.length - 1] === "") lines.pop();
+        lines.forEach((line, li) => {
+          const cells = line.split("\t");
+          const targetRow = startRow + li;
+          while (gridRows.length <= targetRow) gridRows.push(emptyRow());
+          cells.forEach((cellVal, ci) => {
+            const targetCol = startCol + ci;
+            if (targetCol < superadminImportColumns().length) gridRows[targetRow][targetCol] = cellVal.trim();
+          });
+        });
+        renderGrid();
+      });
+    });
+    qsa("[data-remove-row]", tbody).forEach((btn) => {
+      btn.addEventListener("click", () => {
+        gridRows.splice(+btn.dataset.removeRow, 1);
+        if (gridRows.length === 0) gridRows.push(emptyRow());
+        renderGrid();
+      });
+    });
+  }
+  renderGrid();
+
+  qs("#sa-import-add-row", root).addEventListener("click", () => { gridRows.push(emptyRow()); renderGrid(); });
+  qs("#sa-import-save", root).addEventListener("click", async () => {
+    const kode = qs("#sa-import-kode", root).value;
+    const rows = gridRows.filter((r) => r[0] && r[0].trim() !== "" && r[4] && r[4].trim() !== ""); // wajib Kecamatan + Nama
+    if (rows.length === 0) return toast("Isi minimal 1 baris dengan Kecamatan dan Nama", true);
+    try {
+      const data = await api("/api/superadmin/import-pemilih", { method: "POST", body: JSON.stringify({ kode, rows }) });
+      toast(`${data.inserted} baris tersimpan${data.dilewati ? `, ${data.dilewati} baris dilewati (Kecamatan/Nama kosong)` : ""}`);
+      gridRows = Array.from({ length: 8 }, emptyRow);
+      renderGrid();
+    } catch (err) { toast(err.message, true); }
+  });
 }
 
 qs("#login-form").addEventListener("submit", async (e) => {
@@ -142,6 +296,29 @@ qs("#logout-btn").addEventListener("click", async () => {
   await api("/api/logout", { method: "POST" }).catch(() => {});
   state.user = null;
   location.reload();
+});
+
+qs("#ganti-password-btn").addEventListener("click", () => {
+  qs("#gp-lama").value = "";
+  qs("#gp-baru").value = "";
+  qs("#gp-ulangi").value = "";
+  qs("#gp-error").textContent = "";
+  qs("#ganti-password-modal").classList.remove("hidden");
+});
+qs("#gp-batal").addEventListener("click", () => qs("#ganti-password-modal").classList.add("hidden"));
+qs("#gp-simpan").addEventListener("click", async () => {
+  const lama = qs("#gp-lama").value;
+  const baru = qs("#gp-baru").value;
+  const ulangi = qs("#gp-ulangi").value;
+  const errEl = qs("#gp-error");
+  errEl.textContent = "";
+  if (!lama || !baru || !ulangi) { errEl.textContent = "Semua kolom wajib diisi"; return; }
+  if (baru !== ulangi) { errEl.textContent = "Password baru dan ulangi tidak sama"; return; }
+  try {
+    await api("/api/account/ganti-password", { method: "POST", body: JSON.stringify({ password_lama: lama, password_baru: baru }) });
+    qs("#ganti-password-modal").classList.add("hidden");
+    toast("Password berhasil diubah");
+  } catch (err) { errEl.textContent = err.message; }
 });
 
 // ---------- Navigasi 2 level: sidebar kiri (modul) + menu atas (tab dalam modul) ----------
@@ -386,7 +563,10 @@ async function renderChoroplethMap(containerId, geojsonUrl, dataByName, { namePr
 async function renderPemilihCari(root) {
   root.innerHTML = `
     <div class="card">
-      <h2>Data Pemilih</h2>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <h2>Data Pemilih</h2>
+        <a class="btn btn-sm" href="/api/pemilih/export?tabel=pemilih">Unduh Excel (CSV)</a>
+      </div>
       <div class="field-row">
         <div class="field"><label>Kecamatan</label><select id="f-kecamatan"><option value="">Memuat...</option></select></div>
         <div class="field"><label>Desa/Kelurahan</label><select id="f-kelurahan"><option value="">Semua Desa/Kelurahan</option></select></div>
@@ -840,6 +1020,7 @@ async function renderPemilihTms(root) {
   root.innerHTML = `
     <div class="card">
       <h2>Rekapitulasi TMS per Kecamatan</h2>
+      <a class="btn btn-sm" href="/api/pemilih/export?tabel=tms_log" style="float:right;margin-top:-32px">Unduh Riwayat TMS (CSV)</a>
       <div id="tms-rekap-cards"><div class="empty-state">Memuat...</div></div>
     </div>
     <div class="card">
@@ -1066,6 +1247,7 @@ async function renderUpChecklist(root) {
   root.innerHTML = `
     <div class="card">
       <h2>Checklist 40 Prosedur (A-DPB1)</h2>
+      <a class="btn btn-sm" href="/api/uji-petik/export?tabel=checklist_jawaban" style="float:right;margin-top:-32px">Unduh Excel (CSV)</a>
       <div class="field-row">
         <div class="field"><label>Triwulan (format YYYY-Q1)</label><input id="up-tw" placeholder="2026-Q1" /></div>
         <div class="field" style="align-self:flex-end"><button class="btn" id="btn-load-checklist">Muat</button></div>
@@ -1118,6 +1300,7 @@ async function renderUpRekap(root) {
   root.innerHTML = `
     <div class="card">
       <h2>Rekap Triwulan (A-DPB2)</h2>
+      <a class="btn btn-sm" href="/api/uji-petik/export?tabel=rekap_triwulan" style="float:right;margin-top:-32px">Unduh Excel (CSV)</a>
       <div class="field-row">
         <div class="field"><label>Triwulan</label><input id="up-rk-tw" placeholder="2026-Q1" /></div>
         <div class="field" style="align-self:flex-end"><button class="btn" id="btn-load-rekap">Muat</button></div>
@@ -1265,6 +1448,7 @@ function renderSampelSection(kind) {
     root.innerHTML = `
       <div class="card">
         <h2>Sampel ${kind === "tms" ? "TMS (A-DPB5)" : "Pemilih Baru (A-DPB7)"}</h2>
+        <a class="btn btn-sm" href="/api/uji-petik/export?tabel=${prefix.replace("-", "_")}" style="float:right;margin-top:-32px">Unduh Excel (CSV)</a>
         <div class="field-row">
           <div class="field"><label>Periode (YYYY-MM)</label><input id="sp-periode" placeholder="2026-08" /></div>
           <div class="field"><label>Cari Nama</label><input id="sp-nama" placeholder="Cari nama..." /></div>
@@ -1382,6 +1566,7 @@ async function renderUpSampelDpb(root) {
   root.innerHTML = `
     <div class="card">
       <h2>Sampel DPB (A-DPB8)</h2>
+      <a class="btn btn-sm" href="/api/uji-petik/export?tabel=sampel_dpb" style="float:right;margin-top:-32px">Unduh Excel (CSV)</a>
       <div class="field-row">
         <div class="field"><label>Periode (YYYY-MM)</label><input id="dpb-periode" placeholder="2026-08" /></div>
         <div class="field" style="align-self:flex-end"><button class="btn" id="btn-load-dpb">Muat</button></div>

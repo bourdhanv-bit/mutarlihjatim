@@ -37,9 +37,28 @@
     </div>
     <div class="topbar-right">
       <span id="user-info"></span>
+      <button id="ganti-password-btn" class="btn-ghost">Ganti Password</button>
       <button id="logout-btn" class="btn-ghost">Keluar</button>
     </div>
   </header>
+
+  <!-- Modal Ganti Password, disembunyikan default, dipakai semua role (kab/kota, provinsi, super admin) -->
+  <div id="ganti-password-modal" class="hidden" style="position:fixed;inset:0;background:rgba(11,21,38,0.6);z-index:200;display:flex;align-items:center;justify-content:center">
+    <div style="background:white;border-radius:12px;padding:28px;width:100%;max-width:380px">
+      <h2 style="margin-top:0">Ganti Password</h2>
+      <label style="display:block;font-size:12px;font-weight:600;color:#64748b;margin:10px 0 4px">Password Lama</label>
+      <input id="gp-lama" type="password" style="width:100%;padding:9px 11px;border:1px solid #e2e8f0;border-radius:7px" />
+      <label style="display:block;font-size:12px;font-weight:600;color:#64748b;margin:10px 0 4px">Password Baru</label>
+      <input id="gp-baru" type="password" style="width:100%;padding:9px 11px;border:1px solid #e2e8f0;border-radius:7px" />
+      <label style="display:block;font-size:12px;font-weight:600;color:#64748b;margin:10px 0 4px">Ulangi Password Baru</label>
+      <input id="gp-ulangi" type="password" style="width:100%;padding:9px 11px;border:1px solid #e2e8f0;border-radius:7px" />
+      <p id="gp-error" style="color:#c0392b;font-size:12.5px;min-height:16px;margin:10px 0 0"></p>
+      <div style="display:flex;gap:8px;margin-top:14px">
+        <button id="gp-simpan" class="btn btn-orange" style="flex:1">Simpan</button>
+        <button id="gp-batal" class="btn" style="background:#94a3b8">Batal</button>
+      </div>
+    </div>
+  </div>
 
   <div class="app-body">
     <aside id="sidebar" class="sidebar"></aside>
@@ -52,6 +71,6 @@
 
 <!-- ?v=N di akhir dipakai untuk cache-busting -- browser akan selalu ambil versi terbaru
      tiap kali angka N ini dinaikkan, bukannya pakai app.js versi lama dari cache. -->
-<script src="app.js?v=14"></script>
+<script src="app.js?v=15"></script>
 </body>
 </html>

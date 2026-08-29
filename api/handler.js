@@ -3,7 +3,7 @@
 // Web Crypto API (dipakai lib/auth.js) tetap tersedia native, sama seperti di Cloudflare Workers.
 export const config = { runtime: "edge" };
 
-import { verifyPassword, createSessionToken, verifySessionToken } from "../lib/auth.js";
+import { verifyPassword, hashPassword, createSessionToken, verifySessionToken } from "../lib/auth.js";
 import { getCentralDb, resolveKabkotaDb, dbAll, dbFirst, dbRun } from "../lib/db.js";
 import { TMS_LABELS, DISABILITAS_LABELS, TMS_KATEGORI, MS_KATEGORI, TMS_CATS, BARU_CATS } from "../lib/labels.js";
 
@@ -59,8 +59,11 @@ export default async function handler(request) {
     if (path === "/api/me" && method === "GET") {
       const { user, error } = await requireAuth(request);
       if (error) return error;
-      return json({ username: user.username, role: user.role, kabkota: user.kabkotaKode });
+      return json({ username: user.username, role: user.role, kabkota: user.kabkotaKode, originRole: user.originRole });
     }
+
+    if (path === "/api/superadmin/switch" && method === "POST") return superadminSwitchHandler(request);
+    if (path === "/api/superadmin/return" && method === "POST") return superadminReturnHandler(request);
 
     if (path === "/api/master/kabkota" && method === "GET") {
       const { error } = await requireAuth(request);
@@ -88,6 +91,19 @@ export default async function handler(request) {
       if (error) return error;
       const db = await resolveKabkotaDb(user.kabkotaKode);
       return handleDokumenApi(request, url, db, user);
+    }
+
+    if (path.startsWith("/api/superadmin/")) {
+      const { user, error } = await requireAuth(request);
+      if (error) return error;
+      if (user.role !== "super_admin") return json({ error: "Hanya super admin yang bisa mengakses ini" }, 403);
+      return handleSuperadminApi(request, url, user);
+    }
+
+    if (path === "/api/account/ganti-password" && method === "POST") {
+      const { user, error } = await requireAuth(request);
+      if (error) return error;
+      return gantiPasswordHandler(request, user);
     }
 
     if (path.startsWith("/api/provinsi/")) {
@@ -134,6 +150,102 @@ function logoutHandler() {
   return json({ ok: true }, 200, {
     "Set-Cookie": "session=; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=0",
   });
+}
+
+// ============== SUPER ADMIN: masuk-sebagai & kembali ==============
+
+async function superadminSwitchHandler(request) {
+  const { user, error } = await requireAuth(request);
+  if (error) return error;
+  if (user.role !== "super_admin") return json({ error: "Hanya super admin yang bisa melakukan ini" }, 403);
+
+  const { target, kode } = await request.json();
+  let newRole, newKabkotaKode;
+  if (target === "provinsi") {
+    newRole = "admin_provinsi";
+    newKabkotaKode = "";
+  } else if (target === "kabkota" && kode) {
+    newRole = "admin_kabkota";
+    newKabkotaKode = kode;
+  } else {
+    return json({ error: "target tidak valid" }, 400);
+  }
+
+  // originUsername/originRole dicatat supaya nanti bisa "Kembali ke Super Admin" tanpa login ulang.
+  const token = await createSessionToken(user.username, newRole, newKabkotaKode, process.env.SESSION_SECRET, 60 * 60 * 12, user.username, "super_admin");
+  return json(
+    { username: user.username, role: newRole, kabkota: newKabkotaKode || null },
+    200,
+    { "Set-Cookie": `session=${encodeURIComponent(token)}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=43200` }
+  );
+}
+
+async function superadminReturnHandler(request) {
+  const { user, error } = await requireAuth(request);
+  if (error) return error;
+  if (user.originRole !== "super_admin" || !user.originUsername) {
+    return json({ error: "Sesi ini bukan hasil peralihan dari Super Admin" }, 400);
+  }
+
+  const token = await createSessionToken(user.originUsername, "super_admin", "", process.env.SESSION_SECRET);
+  return json(
+    { username: user.originUsername, role: "super_admin", kabkota: null },
+    200,
+    { "Set-Cookie": `session=${encodeURIComponent(token)}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=43200` }
+  );
+}
+
+// ============== SUPER ADMIN: generate data pemilih dari Excel (langsung dieksekusi ke DB tujuan) ==============
+
+async function handleSuperadminApi(request, url, user) {
+  const path = url.pathname;
+
+  if (path === "/api/superadmin/import-pemilih" && request.method === "POST") {
+    const { kode, rows } = await request.json();
+    if (!kode) return json({ error: "kode kabkota tujuan wajib diisi" }, 400);
+    if (!Array.isArray(rows) || rows.length === 0) return json({ error: "Tidak ada baris data untuk diimpor" }, 400);
+
+    const db = await resolveKabkotaDb(kode);
+    let inserted = 0;
+    const dilewati = [];
+    for (const row of rows) {
+      // Format 1 baris: [kecamatan, kelurahan, nkk, nik, nama, tempat_lahir, tanggal_lahir,
+      // sts_kawin, kelamin, alamat, rt, rw, disabilitas, ektp, keterangan, sumber, tps]
+      const kecamatan = row[0];
+      const rest = row.slice(1, 1 + INPUT_COLS.length);
+      const nama = rest[3]; // index Nama di dalam INPUT_COLS
+      if (!kecamatan || !nama) { dilewati.push(row); continue; }
+      await dbRun(
+        db,
+        `INSERT INTO pemilih (kecamatan, ${INPUT_COLS.join(", ")}, tanggal_input)
+         VALUES (?, ${INPUT_COLS.map(() => "?").join(", ")}, datetime('now'))`,
+        [kecamatan, ...rest]
+      );
+      inserted++;
+    }
+    return json({ ok: true, inserted, dilewati: dilewati.length });
+  }
+
+  return json({ error: "Endpoint tidak ditemukan" }, 404);
+}
+
+// ============== GANTI PASSWORD (semua role: admin_kabkota, admin_provinsi, super_admin) ==============
+
+async function gantiPasswordHandler(request, user) {
+  const { password_lama, password_baru } = await request.json();
+  if (!password_lama || !password_baru) return json({ error: "Password lama dan baru wajib diisi" }, 400);
+  if (password_baru.length < 6) return json({ error: "Password baru minimal 6 karakter" }, 400);
+
+  const central = getCentralDb();
+  const row = await dbFirst(central, "SELECT password_hash FROM users WHERE username = ?", [user.username]);
+  if (!row) return json({ error: "Akun tidak ditemukan" }, 404);
+
+  const valid = await verifyPassword(password_lama, row.password_hash);
+  if (!valid) return json({ error: "Password lama salah" }, 401);
+
+  const newHash = await hashPassword(password_baru);
+  await dbRun(central, "UPDATE users SET password_hash = ? WHERE username = ?", [newHash, user.username]);
+  return json({ ok: true });
 }
 
 // ============== MODUL PEMILIH ==============
@@ -231,6 +343,29 @@ async function generateSnapshot(db, bulanOverride) {
 
   return data;
 }
+
+// ---- Unduh Excel (format CSV, langsung bisa dibuka di Excel/Sheets tanpa library tambahan) ----
+function csvEscape(v) {
+  if (v === null || v === undefined) return "";
+  const s = String(v);
+  if (s.includes(",") || s.includes('"') || s.includes("\n")) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+function toCsv(rows) {
+  if (rows.length === 0) return "";
+  const headers = Object.keys(rows[0]);
+  const lines = [headers.join(",")];
+  for (const row of rows) lines.push(headers.map((h) => csvEscape(row[h])).join(","));
+  return lines.join("\n");
+}
+function csvResponse(csv, filename) {
+  return new Response(csv, {
+    status: 200,
+    headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="${filename}"` },
+  });
+}
+const EXPORT_TABEL_PEMILIH = ["pemilih", "tms_log", "ubah_data_log"];
+const EXPORT_TABEL_UJI_PETIK = ["checklist_jawaban", "rekap_triwulan", "rekap_triwulan_masukan", "sampel_tms", "sampel_ms", "sampel_dpb"];
 
 async function handlePemilihApi(request, url, db, user) {
   const path = url.pathname;
@@ -360,6 +495,14 @@ async function handlePemilihApi(request, url, db, user) {
   if (path === "/api/pemilih/statistik/generate" && method === "POST") {
     const data = await generateSnapshot(db);
     return json({ ok: true, data });
+  }
+
+  // ---- Unduh Excel/CSV 1 tabel utuh ----
+  if (path === "/api/pemilih/export" && method === "GET") {
+    const tabel = url.searchParams.get("tabel");
+    if (!EXPORT_TABEL_PEMILIH.includes(tabel)) return json({ error: "Tabel tidak valid" }, 400);
+    const rows = await dbAll(db, `SELECT * FROM ${tabel}`);
+    return csvResponse(toCsv(rows), `${tabel}-${user.kabkotaKode}.csv`);
   }
 
   // ---- TAB DATA: cari/list pemilih (support pencarian NIK massal) ----
@@ -1011,6 +1154,14 @@ async function triwulanComparison(db, kecamatanFilter) {
 async function handleUjiPetikApi(request, url, db, user) {
   const path = url.pathname;
   const method = request.method;
+
+  // ---- Unduh Excel/CSV 1 tabel utuh ----
+  if (path === "/api/uji-petik/export" && method === "GET") {
+    const tabel = url.searchParams.get("tabel");
+    if (!EXPORT_TABEL_UJI_PETIK.includes(tabel)) return json({ error: "Tabel tidak valid" }, 400);
+    const rows = await dbAll(db, `SELECT * FROM ${tabel}`);
+    return csvResponse(toCsv(rows), `${tabel}-${user.kabkotaKode}.csv`);
+  }
 
   // ---- Helper generik: daftar nilai unik 1 kolom (dipakai untuk dropdown triwulan/periode) ----
   if (path === "/api/uji-petik/checklist/list-triwulan" && method === "GET") {

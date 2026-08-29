@@ -108,3 +108,25 @@ bash scripts/apply-migrasi-uji-petik-v2.sh
 ```
 Kalau Anda baru membuat 38 database dari nol (belum pernah jalankan `apply-schema-all.sh`
 sebelumnya), tidak perlu ini -- `schema-kabkota-template.sql` sudah versi benar sejak awal.
+
+## Fitur Super Admin (baru)
+
+Akun `super-admin` bisa "masuk sebagai" kab/kota manapun atau provinsi tanpa perlu tahu password
+masing-masing, plus fitur generate data pemilih dari Excel untuk kab/kota manapun langsung ke
+database tujuan. **Sengaja dibuat lewat script terpisah** (`scripts/create-superadmin.cjs`), tidak
+tercampur dengan `generate-seed-users.cjs` yang bikin 39 user standar, supaya tidak
+"kelihatan"/tercampur di daftar user biasa.
+
+Setup:
+```
+node scripts/create-superadmin.cjs > schema/seed-superadmin.sql
+turso db shell mutarlihjatim-central < schema/seed-superadmin.sql
+```
+Username: `super-admin`, password sudah diset di dalam script itu sendiri (`1234567890)(*&^%$#@!`).
+
+Fitur ganti password (tombol di kanan atas, semua role) memakai endpoint
+`/api/account/ganti-password` -- berlaku untuk admin_kabkota, admin_provinsi, maupun super_admin,
+tidak perlu setup tambahan.
+
+Fitur unduh Excel memakai format **CSV** (bukan `.xlsx` biner asli) supaya tidak perlu menambah
+library baru yang berat/berisiko di Edge Runtime -- CSV tetap terbuka normal di Excel/Sheets.
