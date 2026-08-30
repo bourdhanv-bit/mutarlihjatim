@@ -130,3 +130,21 @@ tidak perlu setup tambahan.
 
 Fitur unduh Excel memakai format **CSV** (bukan `.xlsx` biner asli) supaya tidak perlu menambah
 library baru yang berat/berisiko di Edge Runtime -- CSV tetap terbuka normal di Excel/Sheets.
+
+## Cron rekap provinsi & Master data kecamatan (sudah dilengkapi)
+
+**Cron rekap provinsi** sudah diisi hitungan sungguhan (dulu placeholder). Menghitung modul
+`pemilih` (per bulan) dan `uji_petik` (per triwulan) untuk 38 kab/kota, disimpan ke
+`rekap_provinsi` di central setiap kali cron jalan (jadwal: `vercel.json`, tiap hari jam 1 pagi).
+
+**Master data kecamatan** sudah diisi -- 666 kecamatan resmi (38 kab/kota) diambil dari data BPS
+yang sama dipakai untuk peta GeoJSON. Jalankan sekali:
+```
+node scripts/generate-seed-kecamatan.cjs > schema/seed-kecamatan.sql
+turso db shell mutarlihjatim-central < schema/seed-kecamatan.sql
+```
+Setelah ini: (1) dropdown kecamatan di semua tab kab/kota otomatis lengkap dari awal (tidak perlu
+ada data pemilih dulu), (2) grid Rekap Triwulan Uji Petik kembali menampilkan SEMUA kecamatan
+resmi selalu (perilaku sama seperti versi Malang lama), bukan cuma yang sudah diisi. Kalau belum
+sempat jalankan seed ini, aplikasi tetap jalan normal (otomatis fallback ke kecamatan yang sudah
+ada datanya saja).

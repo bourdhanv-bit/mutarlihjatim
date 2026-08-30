@@ -469,7 +469,13 @@ function goToSection(key) {
 // (Data, Pemilih MS, Input) supaya konsisten dan tidak perlu ketik manual nama kecamatan.
 async function populateKecamatanDropdown(selectEl) {
   try {
-    const data = await api("/api/pemilih/kecamatan");
+    // Utamakan daftar RESMI (master data, selalu lengkap dari awal). Kalau kosong (kabkota
+    // belum ada di master data / belum jalankan seed-kecamatan), fallback ke kecamatan yang
+    // kebetulan sudah punya data pemilih.
+    let data = await api("/api/pemilih/kecamatan-resmi");
+    if (!data.kecamatan || data.kecamatan.length === 0) {
+      data = await api("/api/pemilih/kecamatan");
+    }
     selectEl.innerHTML = `<option value="">Pilih kecamatan...</option>` + data.kecamatan.map((k) => `<option value="${esc(k)}">${esc(k)}</option>`).join("");
   } catch {
     selectEl.innerHTML = `<option value="">(gagal memuat)</option>`;

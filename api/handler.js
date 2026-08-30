@@ -717,6 +717,18 @@ async function handlePemilihApi(request, url, db, user) {
     return json(data);
   }
 
+  // ---- Daftar RESMI seluruh kecamatan di kabkota ini (dari master data central, bukan cuma
+  // yang sudah ada datanya) -- dipakai untuk dropdown/grid supaya selalu lengkap dari awal ----
+  if (path === "/api/pemilih/kecamatan-resmi" && method === "GET") {
+    const central = getCentralDb();
+    const rows = await dbAll(
+      central,
+      `SELECT k.nama FROM kecamatan k JOIN kabkota kb ON kb.id = k.kabkota_id WHERE kb.kode = ? ORDER BY k.urutan`,
+      [user.kabkotaKode]
+    );
+    return json({ kecamatan: rows.map((r) => r.nama) });
+  }
+
   // ---- Filter helper: daftar kelurahan dalam 1 kecamatan ----
   if (path === "/api/pemilih/kelurahan" && method === "GET") {
     const kecamatan = url.searchParams.get("kecamatan");
@@ -1248,11 +1260,26 @@ async function handleUjiPetikApi(request, url, db, user) {
     const prevByKecamatan = {};
     for (const row of prevResults) prevByKecamatan[row.kecamatan] = withTotals(row);
 
-    // Gabungan kecamatan yang sudah punya data di triwulan ini ATAU triwulan sebelumnya
-    // (supaya carry-forward tetap kelihatan sebelum admin klik Simpan).
-    const kecSet = new Set([...results.map((r) => r.kecamatan), ...prevResults.map((r) => r.kecamatan)]);
+    // Daftar RESMI seluruh kecamatan di kabkota ini (dari master data central) -- supaya grid
+    // selalu tampil lengkap dari awal, bukan cuma kecamatan yang kebetulan sudah ada datanya.
+    // Kalau master data belum diisi untuk kabkota ini (belum jalankan seed-kecamatan), otomatis
+    // fallback ke gabungan kecamatan yang sudah punya data saja (perilaku lama).
+    const central = getCentralDb();
+    const resmiRows = await dbAll(
+      central,
+      `SELECT k.nama FROM kecamatan k JOIN kabkota kb ON kb.id = k.kabkota_id WHERE kb.kode = ? ORDER BY k.urutan`,
+      [user.kabkotaKode]
+    );
+    const namaResmi = resmiRows.map((r) => r.nama);
 
-    const rows = [...kecSet].sort().map((kec) => {
+    const kecSet = namaResmi.length > 0
+      ? new Set(namaResmi)
+      : new Set([...results.map((r) => r.kecamatan), ...prevResults.map((r) => r.kecamatan)]);
+
+    const urutanIndex = new Map(namaResmi.map((n, i) => [n, i]));
+    const rows = [...kecSet]
+      .sort((a, b) => (urutanIndex.has(a) && urutanIndex.has(b) ? urutanIndex.get(a) - urutanIndex.get(b) : a.localeCompare(b)))
+      .map((kec) => {
       const existing = results.find((r) => r.kecamatan === kec);
       if (existing) return { ...withTotals(existing), carried_forward: false };
 
